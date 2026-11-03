@@ -154,6 +154,18 @@ func (r *P2VMigrationReconciler) step(ctx context.Context, m *migrationv1alpha1.
 		if blocked := firstBlocker(results); blocked != nil {
 			setCondition(m, ConditionPreflightPassed, metav1.ConditionFalse, "Blocked", blocked.Message)
 			m.Status.Message = "pre-flight check failed: " + blocked.Message
+			// Discovery by boot: a server never inventoried can be booted into
+			// the live environment by its BMC; pre-flight then re-runs against
+			// the real hardware. (PXE servers are served during pre-flight too.)
+			if onlyInventoryMissing(results) && src != nil && src.Spec.BMC != nil &&
+				(m.Spec.BootMethod == migrationv1alpha1.BootRedfish || m.Spec.BootMethod == migrationv1alpha1.BootPXE) {
+				if ok, _ := bootMethodReady(m, src); ok {
+					if err := r.bootViaBMC(ctx, m, src); err != nil {
+						return ctrl.Result{}, err
+					}
+					m.Status.Message = "booting " + src.Name + " through its BMC to discover its hardware"
+				}
+			}
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 		}
 		setCondition(m, ConditionPreflightPassed, metav1.ConditionTrue, "Passed", "all pre-flight checks passed")
@@ -356,6 +368,21 @@ func findDisk(inv *migrationv1alpha1.Inventory, id string) *migrationv1alpha1.Di
 		}
 	}
 	return nil
+}
+
+// onlyInventoryMissing reports whether the missing inventory is the only blocker.
+func onlyInventoryMissing(results []migrationv1alpha1.PreflightResult) bool {
+	missing := false
+	for _, r := range results {
+		if r.Passed || r.Severity != migrationv1alpha1.SeverityBlocker {
+			continue
+		}
+		if r.Name != "InventoryAvailable" {
+			return false
+		}
+		missing = true
+	}
+	return missing
 }
 
 func firstBlocker(results []migrationv1alpha1.PreflightResult) *migrationv1alpha1.PreflightResult {

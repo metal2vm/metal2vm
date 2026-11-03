@@ -70,3 +70,19 @@ func TestNetworkPlan(t *testing.T) {
 		t.Errorf("static IPs %v", static)
 	}
 }
+
+func TestOnlyInventoryMissing(t *testing.T) {
+	b := migrationv1alpha1.SeverityBlocker
+	inv := migrationv1alpha1.PreflightResult{Name: "InventoryAvailable", Severity: b}
+	other := migrationv1alpha1.PreflightResult{Name: "SourceNotBusy", Severity: b}
+	warn := migrationv1alpha1.PreflightResult{Name: "NoEncryptedDisks", Severity: migrationv1alpha1.SeverityWarning}
+	if !onlyInventoryMissing([]migrationv1alpha1.PreflightResult{inv, warn}) {
+		t.Error("inventory plus a warning is a discovery case")
+	}
+	if onlyInventoryMissing([]migrationv1alpha1.PreflightResult{inv, other}) {
+		t.Error("another blocker must stop the discovery boot")
+	}
+	if onlyInventoryMissing([]migrationv1alpha1.PreflightResult{warn}) {
+		t.Error("nothing missing")
+	}
+}

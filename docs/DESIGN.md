@@ -245,12 +245,32 @@ Maps the inventory and plan to a KubeVirt `VirtualMachine`:
 - **Verified on the cluster:**
   - A RHEL source with a static, MAC-bound `ifcfg-eth0` was migrated to an OVN layer-2 network with a new MAC. The VM came up with DHCP `192.168.77.2`. Both the MAC rewrite (ifcfg and udev rule) and the DHCP switch were required for that.
 
+### 3.8.5 As built in M4: remote boot (Redfish, PXE, HTTP boot media)
+- **Redfish** (`internal/bmc`, gofish):
+  - Virtual media is found under Systems or Managers. Insert is retried with `TransferProtocolType` for BMCs that require it. Boot override is one-time; reset uses On or ForceRestart.
+  - `P2VSource` records `status.bmc` (model, serial, power, virtual media) and `BMCReachable`.
+- **`bootMethod: redfish`:**
+  - The BMC inserts the per-server ISO and power-cycles.
+  - At cutover, metal2vm asks the agent to power off, **confirms it through the BMC**, forces it after 2 minutes, and **ejects the media**.
+  - Rollback boots the server's own disks remotely.
+  - Every BMC action decides from the BMC's own state (power, inserted media), not the cache. In the lab, a stale cache once ran a rollback twice and restarted the server mid-boot.
+- **Discovery by boot:** when the missing inventory is the only pre-flight blocker and a BMC is available, the server is booted into the live environment to discover its hardware, and pre-flight re-runs against the real data.
+- **PXE:**
+  - The per-server iPXE script loads the live kernel, initramfs and `coreos.live.rootfs_url`, with the source's Ignition as a second initrd.
+  - `/boot/v1/pxe-mac/<mac>` lets one DHCP `filename` setting serve every server. It answers only while that server's migration is in Preflight or Booting with `bootMethod: pxe`; otherwise it returns `exit`, so the firmware boots the local disk and servers can keep PXE first.
+  - With a BMC, a one-time PXE boot is triggered.
+- **HTTP boot media** (`P2VConfig.spec.gateway.bootMediaHTTP`): a boot-artifacts-only listener (port 9445, Service and Route `metal2vm-boot-http`) for BMCs and iPXE that can't do HTTPS. The agent API never answers there. The boot token crosses the network in clear text, so use it on trusted provisioning networks only.
+- **Verified on the cluster:**
+  - A migration with `bootMethod: redfish` (lab Redfish emulator for KubeVirt) ran with no manual step, and its rollback booted the untouched source.
+  - An iPXE chain over HTTP fell through to the disk when no migration was waiting, and booted the live environment in 72 seconds when one was.
+
 ### 3.9 Required network flows (included in the docs)
 | From | To | Port | Purpose |
 |---|---|---|---|
 | Source (live env) | Cluster ingress VIP | 443 | Ignition, agent binary, live tools, per-migration tunnel (`m2v-*.<apps domain>`) |
 | Source (PXE) | Cluster ingress VIP | 80/443 | iPXE, kernel, initrd, rootfs |
-| BMC | Cluster ingress VIP | 443 (or 80) | Virtual-media ISO fetch |
+| BMC | Cluster ingress VIP | 443, or 80 with bootMediaHTTP | Virtual-media ISO fetch |
+| Source (iPXE) | Cluster ingress VIP | 80 (bootMediaHTTP) | iPXE script, kernel, initramfs, rootfs, Ignition initrd |
 | Operator pod | BMC | 443 | Redfish |
 | Operator pod | Source OS | 22 / 5986 | Optional pre-check (SSH/WinRM) |
 
