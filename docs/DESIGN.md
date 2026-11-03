@@ -264,6 +264,14 @@ Maps the inventory and plan to a KubeVirt `VirtualMachine`:
   - A migration with `bootMethod: redfish` (lab Redfish emulator for KubeVirt) ran with no manual step, and its rollback booted the untouched source.
   - An iPXE chain over HTTP fell through to the disk when no migration was waiting, and booted the live environment in 72 seconds when one was.
 
+### 3.8.6 As built in M5: console plugin
+- **Delivery:** `config/console-plugin` (nginx Deployment with a serving certificate, ConsolePlugin CR). The admin enables it once in the console operator.
+- **Pages** under *Virtualization*, namespace-scoped through the project selector:
+  - *Physical servers*: list, *Add physical server* (BMC, PXE and OS pre-check; credentials go to `<name>-bmc` / `<name>-os` Secrets), and details with inventory, risks, ISO download and iPXE URL.
+  - *Migrate a server* wizard: server and boot method, per-disk action and storage class, per-NIC network with keep MAC/IP, VM size, then a plain-language review (the raw `P2VMigration` is behind an expander). The default migration name avoids existing ones.
+  - *Physical migrations*: list, and details with a progress stepper, disks, guest network notes, conditions, a VM console link, and *Cut over* / *Roll back* / *Archive* with confirmation. These buttons only set `spec` fields; the operator does the work.
+- The plugin holds no logic the operator lacks; everything it does can be done with `oc` on the CRs.
+
 ### 3.9 Required network flows (included in the docs)
 | From | To | Port | Purpose |
 |---|---|---|---|

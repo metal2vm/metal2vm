@@ -144,6 +144,8 @@ func (r *P2VMigrationReconciler) reconcileConvert(ctx context.Context, m *migrat
 func networkPlan(m *migrationv1alpha1.P2VMigration, osc *migrationv1alpha1.OSConfig) (netfix.Plan, []string) {
 	var p netfix.Plan
 	var staticIPs []string
+	// netfix edits Linux files only; Windows gets static IPs from virt-v2v.
+	windows := osc != nil && osc.OS.Family == migrationv1alpha1.OSWindows
 	for _, n := range m.Spec.NICs {
 		src := strings.ToLower(n.SourceMAC)
 		target := vmbuilder.TargetMAC(m, n)
@@ -159,7 +161,9 @@ func networkPlan(m *migrationv1alpha1.P2VMigration, osc *migrationv1alpha1.OSCon
 				}
 			}
 		}
-		p.NICs = append(p.NICs, nic)
+		if !windows {
+			p.NICs = append(p.NICs, nic)
+		}
 	}
 	return p, staticIPs
 }

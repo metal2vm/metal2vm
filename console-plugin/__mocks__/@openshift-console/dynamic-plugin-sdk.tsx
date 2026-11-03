@@ -11,7 +11,12 @@
  */
 import type * as SDK from '@openshift-console/dynamic-plugin-sdk';
 
-export const ListPageHeader: typeof SDK.ListPageHeader = ({ title }) => <h1>{title}</h1>;
+export const ListPageHeader: typeof SDK.ListPageHeader = ({ title, children }) => (
+  <>
+    <h1>{title}</h1>
+    {children}
+  </>
+);
 
 export const DocumentTitle: typeof SDK.DocumentTitle = () => null;
 
@@ -23,3 +28,13 @@ export const useActiveNamespace: typeof SDK.useActiveNamespace = () => ['#ALL_NS
 
 // Tests set the return value with (useK8sWatchResource as jest.Mock).mockReturnValue(...).
 export const useK8sWatchResource = jest.fn();
+
+export const NamespaceBar: typeof SDK.NamespaceBar = () => null;
+
+export const ListPageCreateButton: typeof SDK.ListPageCreateButton = ({ children, onClick }) => (
+  <button onClick={onClick}>{children}</button>
+);
+
+export const k8sCreate = jest.fn();
+
+export const k8sPatch = jest.fn();

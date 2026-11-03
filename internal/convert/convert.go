@@ -202,7 +202,11 @@ func Run(ctx context.Context, p Plan, v2v, guestfish, workDir string, log io.Wri
 		return Result{NetworkNotes: notes}, err
 	}
 	res, err := runV2V(ctx, p, v2v, workDir, log)
-	res.NetworkNotes = notes
+	// The fix-up only understands Linux; for Windows (without a pre-check that
+	// would have skipped it) its notes are about a failed mount and only confuse.
+	if res.OS.Name != "windows" {
+		res.NetworkNotes = notes
+	}
 	return res, err
 }
 

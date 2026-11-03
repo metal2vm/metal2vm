@@ -4,7 +4,7 @@
 # For development clusters only; releases use the OLM bundle / Helm chart.
 #
 # Needs: oc (or bin/oc), kubectl, podman (for the kustomize toolbox), and a
-# logged-in cluster-admin. Usage: hack/openshift-dev-deploy.sh [operator|transfer|boot|deploy|all]
+# logged-in cluster-admin. Usage: hack/openshift-dev-deploy.sh [operator|transfer|boot|plugin|deploy|all]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -59,6 +59,22 @@ case "$STEP" in transfer|all)
 esac
 case "$STEP" in boot|all)
   build metal2vm-boot-artifacts Containerfile images/boot-artifacts Containerfile ;;
+esac
+case "$STEP" in plugin|all)
+  ctx="$(mktemp -d -t metal2vm-plugin)"
+  (cd console-plugin && tar --exclude=node_modules --exclude=dist -cf - .) | tar -xf - -C "$ctx"
+  ensure_build metal2vm-console-plugin Dockerfile
+  echo ">> building metal2vm-console-plugin on the cluster"
+  "$OC" -n "$NS" start-build metal2vm-console-plugin --from-dir="$ctx" --follow --wait | tail -n 1
+  rm -rf "$ctx"
+  pimg="$(image_ref metal2vm-console-plugin)"
+  sed "s#image: console-plugin:latest#image: $pimg#" config/console-plugin/console-plugin.yaml | kubectl apply --server-side -f -
+  kubectl -n "$NS" rollout status deploy/metal2vm-console-plugin --timeout=180s
+  # Enable the plugin in the console (cluster-wide setting), once.
+  if ! kubectl get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}' | grep -q metal2vm-console-plugin; then
+    kubectl patch consoles.operator.openshift.io cluster --type=json \
+      -p '[{"op":"add","path":"/spec/plugins/-","value":"metal2vm-console-plugin"}]'
+  fi ;;
 esac
 case "$STEP" in deploy|all)
   op="$(image_ref metal2vm-operator)"

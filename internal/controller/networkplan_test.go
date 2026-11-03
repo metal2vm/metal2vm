@@ -69,6 +69,13 @@ func TestNetworkPlan(t *testing.T) {
 	if len(static) != 1 || static[0] != "3c:ec:ef:00:00:01:ip:10.5.0.20,10.5.0.1,24,10.5.0.10,10.5.0.11" {
 		t.Errorf("static IPs %v", static)
 	}
+
+	// Windows: no Linux fix-up, static IPs still go to virt-v2v.
+	osc.OS.Family = migrationv1alpha1.OSWindows
+	plan, static = networkPlan(m, osc)
+	if len(plan.NICs) != 0 || len(static) != 1 {
+		t.Errorf("windows plan %+v, static %v", plan, static)
+	}
 }
 
 func TestOnlyInventoryMissing(t *testing.T) {

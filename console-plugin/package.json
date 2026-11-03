@@ -91,7 +91,12 @@
     "displayName": "metal2vm",
     "description": "Migrate physical servers to OpenShift Virtualization VMs.",
     "exposedModules": {
-      "MigrationsPage": "./components/MigrationsPage"
+      "MigrationsPage": "./components/migrations/MigrationsPage",
+      "MigrationDetailsPage": "./components/migrations/MigrationDetailsPage",
+      "MigrationWizard": "./components/wizard/MigrationWizard",
+      "SourcesPage": "./components/sources/SourcesPage",
+      "AddSourcePage": "./components/sources/AddSourcePage",
+      "SourceDetailsPage": "./components/sources/SourceDetailsPage"
     },
     "dependencies": {
       "@console/pluginAPI": ">=4.22.0-0"

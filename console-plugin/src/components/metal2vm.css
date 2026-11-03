@@ -1,0 +1,12 @@
+/* Prefix classes with the plugin name to avoid collisions with other plugins. */
+.metal2vm-spaced {
+  margin-bottom: var(--pf-t--global--spacer--sm);
+}
+
+.metal2vm-section {
+  margin-top: var(--pf-t--global--spacer--lg);
+}
+
+.metal2vm-form {
+  max-width: 48rem;
+}

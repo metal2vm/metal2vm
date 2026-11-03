@@ -8,6 +8,56 @@
     }
   },
   {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/p2v/ns/:ns/migrations/~new",
+      "component": { "$codeRef": "MigrationWizard" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/p2v/ns/:ns/migrations/:name",
+      "component": { "$codeRef": "MigrationDetailsPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": ["/p2v/sources", "/p2v/ns/:ns/sources"],
+      "component": { "$codeRef": "SourcesPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/p2v/ns/:ns/sources/~new",
+      "component": { "$codeRef": "AddSourcePage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/p2v/ns/:ns/sources/:name",
+      "component": { "$codeRef": "SourceDetailsPage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "metal2vm-sources",
+      "name": "%plugin__metal2vm-console-plugin~Physical servers%",
+      "href": "/p2v/sources",
+      "perspective": "admin",
+      "section": "virtualization"
+    }
+  },
+  {
     "type": "console.navigation/href",
     "properties": {
       "id": "metal2vm-migrations",

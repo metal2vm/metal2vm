@@ -1,0 +1,79 @@
+# The metal2vm OpenShift console plugin: nginx serving the plugin bundle over
+# TLS (service-CA certificate), registered with a ConsolePlugin. Enabling it
+# also needs "metal2vm-console-plugin" in consoles.operator.openshift.io/cluster
+# spec.plugins.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metal2vm-console-plugin
+  namespace: metal2vm-system
+  labels: {app: metal2vm-console-plugin, app.kubernetes.io/part-of: metal2vm}
+data:
+  nginx.conf: |
+    error_log /dev/stdout info;
+    events {}
+    http {
+      access_log /dev/stdout;
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      keepalive_timeout 65;
+      server {
+        listen 9443 ssl;
+        listen [::]:9443 ssl;
+        ssl_certificate /var/cert/tls.crt;
+        ssl_certificate_key /var/cert/tls.key;
+        root /usr/share/nginx/html;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metal2vm-console-plugin
+  namespace: metal2vm-system
+  labels: {app: metal2vm-console-plugin, app.kubernetes.io/part-of: metal2vm}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: metal2vm-console-plugin}}
+  template:
+    metadata: {labels: {app: metal2vm-console-plugin}}
+    spec:
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: plugin
+        image: console-plugin:latest
+        ports: [{containerPort: 9443, protocol: TCP}]
+        securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+        resources:
+          requests: {cpu: 10m, memory: 50Mi}
+          limits: {memory: 128Mi}
+        volumeMounts:
+        - {name: cert, mountPath: /var/cert, readOnly: true}
+        - {name: nginx-conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true}
+      volumes:
+      - {name: cert, secret: {secretName: metal2vm-console-plugin-cert, defaultMode: 420}}
+      - {name: nginx-conf, configMap: {name: metal2vm-console-plugin, defaultMode: 420}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metal2vm-console-plugin
+  namespace: metal2vm-system
+  labels: {app: metal2vm-console-plugin, app.kubernetes.io/part-of: metal2vm}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: metal2vm-console-plugin-cert
+spec:
+  selector: {app: metal2vm-console-plugin}
+  ports: [{name: https, port: 9443, targetPort: 9443, protocol: TCP}]
+---
+apiVersion: console.openshift.io/v1
+kind: ConsolePlugin
+metadata:
+  name: metal2vm-console-plugin
+  labels: {app.kubernetes.io/part-of: metal2vm}
+spec:
+  displayName: metal2vm
+  i18n: {loadType: Preload}
+  backend:
+    type: Service
+    service: {name: metal2vm-console-plugin, namespace: metal2vm-system, port: 9443, basePath: /}
