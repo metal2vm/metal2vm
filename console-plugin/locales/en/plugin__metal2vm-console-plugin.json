@@ -1,0 +1,14 @@
+{
+  "Created": "Created",
+  "Loading": "Loading",
+  "Migrations of physical servers to virtual machines will appear here.": "Migrations of physical servers to virtual machines will appear here.",
+  "Mode": "Mode",
+  "Name": "Name",
+  "Namespace": "Namespace",
+  "No physical migrations yet": "No physical migrations yet",
+  "Phase": "Phase",
+  "Physical migrations": "Physical migrations",
+  "Source": "Source",
+  "Unable to load migrations": "Unable to load migrations",
+  "Virtual machine": "Virtual machine"
+}

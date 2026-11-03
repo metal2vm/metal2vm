@@ -1,0 +1,37 @@
+# Carries the unmodified Fedora CoreOS live ISO used to build per-source boot
+# media, and the live-tools root filesystem (nbdkit) that live agents download
+# from the gateway to export disks. Shipping it as an image lets disconnected clusters mirror it with
+# oc-mirror like any other image. The operator pod copies it out in an init
+# container.
+#
+# Update FCOS_VERSION and FCOS_ISO_SHA256 together, from
+# https://builds.coreos.fedoraproject.org/streams/stable.json
+ARG FCOS_VERSION=44.20261023.3.1
+ARG FCOS_ISO_SHA256=c08323ea851e56bb65f5700e51a07f78a049165cea32b26642a7cea5dc2a6ac8
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal AS download
+ARG FCOS_VERSION
+ARG FCOS_ISO_SHA256
+RUN curl -fsSL -o /live.iso \
+      "https://builds.coreos.fedoraproject.org/prod/streams/stable/builds/${FCOS_VERSION}/x86_64/fedora-coreos-${FCOS_VERSION}-live-iso.x86_64.iso" && \
+    echo "${FCOS_ISO_SHA256}  /live.iso" | sha256sum -c -
+
+# A minimal Fedora root filesystem with nbdkit and its file plugin, run by the
+# agent with `podman run --rootfs`. Same Fedora release as the live ISO.
+FROM registry.fedoraproject.org/fedora:44 AS tools
+RUN dnf5 -y --installroot=/rootfs --use-host-config --releasever=44 \
+      --setopt=install_weak_deps=False --nodocs \
+      install nbdkit-server nbdkit-basic-plugins && \
+    dnf5 --installroot=/rootfs clean all && \
+    rm -rf /rootfs/var/cache/* /rootfs/var/log/* && \
+    tar -C /rootfs -czf /live-tools.tar.gz .
+
+FROM registry.access.redhat.com/ubi9/ubi-micro
+ARG FCOS_VERSION
+LABEL org.opencontainers.image.title="metal2vm boot artifacts" \
+      org.opencontainers.image.description="Fedora CoreOS ${FCOS_VERSION} live ISO (unmodified) for metal2vm" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      io.metal2vm.fcos-version="${FCOS_VERSION}"
+COPY --from=download /live.iso /boot/live.iso
+COPY --from=tools /live-tools.tar.gz /boot/live-tools.tar.gz
+USER 65532

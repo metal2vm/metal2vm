@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- migration_v1alpha1_p2vsource.yaml
+- migration_v1alpha1_p2vmigration.yaml
+- migration_v1alpha1_p2vconfig.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

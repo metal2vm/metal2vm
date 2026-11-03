@@ -1,0 +1,415 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: p2vsources.migration.metal2vm.io
+spec:
+  group: migration.metal2vm.io
+  names:
+    kind: P2VSource
+    listKind: P2VSourceList
+    plural: p2vsources
+    shortNames:
+    - p2vs
+    singular: p2vsource
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.inventory.os.distribution
+      name: OS
+      type: string
+    - jsonPath: .status.inventory.firmware.type
+      name: Firmware
+      type: string
+    - jsonPath: .status.inventory.collectedBy
+      name: Inventory
+      type: string
+    - jsonPath: .status.agent.connected
+      name: Agent
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: P2VSource is a physical server that can be migrated to a VM.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of P2VSource
+            properties:
+              bmc:
+                description: bmc enables remote boot of the live environment and power
+                  control via Redfish.
+                properties:
+                  address:
+                    description: address is the Redfish base URL, e.g. https://10.0.0.10.
+                    pattern: ^https?://
+                    type: string
+                  credentialsSecretRef:
+                    description: |-
+                      credentialsSecretRef names a Secret in the same namespace with keys
+                      "username" and "password".
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  insecureSkipVerify:
+                    description: insecureSkipVerify disables TLS verification of the
+                      BMC certificate.
+                    type: boolean
+                  systemID:
+                    description: systemID selects the Redfish ComputerSystem. Empty
+                      means the only system.
+                    type: string
+                required:
+                - address
+                - credentialsSecretRef
+                type: object
+              osAccess:
+                description: |-
+                  osAccess enables a read-only pre-check of the running OS (inventory and
+                  blockers such as BitLocker) before any downtime is scheduled.
+                properties:
+                  address:
+                    description: address is the hostname or IP of the running OS.
+                    type: string
+                  credentialsSecretRef:
+                    description: |-
+                      credentialsSecretRef names a Secret with "username" and either "password"
+                      or "ssh-privatekey".
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  port:
+                    description: port defaults to 22 (ssh) or 5986 (winrm).
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  type:
+                    description: OSAccessType is the remote management protocol of
+                      the running OS.
+                    enum:
+                    - ssh
+                    - winrm
+                    type: string
+                required:
+                - address
+                - credentialsSecretRef
+                - type
+                type: object
+              pxe:
+                description: pxe enables network boot of the live environment.
+                properties:
+                  bootMACAddress:
+                    description: bootMACAddress is the MAC address of the NIC that
+                      PXE boots.
+                    pattern: ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$
+                    type: string
+                required:
+                - bootMACAddress
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of P2VSource
+            properties:
+              agent:
+                description: agent is the state of the live agent, when one is running.
+                properties:
+                  connected:
+                    type: boolean
+                  lastHeartbeat:
+                    format: date-time
+                    type: string
+                  version:
+                    type: string
+                type: object
+              bootMedia:
+                description: bootMedia describes the live environment boot media for
+                  this source.
+                properties:
+                  expiresAt:
+                    description: expiresAt is when the boot media and agent token
+                      stop working.
+                    format: date-time
+                    type: string
+                  secretName:
+                    description: |-
+                      secretName is a Secret in the same namespace with keys "isoURL",
+                      "token" and "expiresAt".
+                    type: string
+                required:
+                - expiresAt
+                - secretName
+                type: object
+              conditions:
+                description: 'conditions: BootMediaReady, InventoryCollected, BMCReachable,
+                  OSReachable, Blocked.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              inventory:
+                description: inventory is the most recently discovered hardware and
+                  OS.
+                properties:
+                  collectedAt:
+                    format: date-time
+                    type: string
+                  collectedBy:
+                    description: InventorySource tells who collected an inventory.
+                    enum:
+                    - PreCheck
+                    - LiveAgent
+                    type: string
+                  cpu:
+                    properties:
+                      coresPerSocket:
+                        format: int32
+                        type: integer
+                      model:
+                        type: string
+                      sockets:
+                        format: int32
+                        type: integer
+                      threadsPerCore:
+                        format: int32
+                        type: integer
+                    type: object
+                  disks:
+                    items:
+                      description: Disk is a whole block device on the source server.
+                      properties:
+                        boot:
+                          description: boot is true when the OS boots from this disk.
+                          type: boolean
+                        encrypted:
+                          description: encrypted is true when a BitLocker or LUKS
+                            volume was found on the disk.
+                          type: boolean
+                        id:
+                          description: |-
+                            id is stable across reboots (WWN, serial or /dev/disk/by-id name) and is
+                            used to match pre-check and live-agent inventories.
+                          type: string
+                        model:
+                          type: string
+                        multipath:
+                          description: multipath is true when the disk is reachable
+                            over several paths.
+                          type: boolean
+                        path:
+                          description: path is the kernel device path seen by the
+                            collector, e.g. /dev/sda.
+                          type: string
+                        serial:
+                          type: string
+                        sizeBytes:
+                          format: int64
+                          type: integer
+                        transport:
+                          description: DiskTransport is how a disk is attached to
+                            the source server.
+                          enum:
+                          - sata
+                          - sas
+                          - nvme
+                          - scsi
+                          - fc
+                          - iscsi
+                          - usb
+                          - virtio
+                          - unknown
+                          type: string
+                        wwn:
+                          type: string
+                      required:
+                      - id
+                      - sizeBytes
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - id
+                    x-kubernetes-list-type: map
+                  firmware:
+                    properties:
+                      secureBoot:
+                        type: boolean
+                      tpm:
+                        description: tpm is true when a TPM 2.0 device is present.
+                        type: boolean
+                      type:
+                        description: FirmwareType is the boot firmware of a machine.
+                        enum:
+                        - bios
+                        - uefi
+                        type: string
+                    type: object
+                  memoryMiB:
+                    format: int64
+                    type: integer
+                  nics:
+                    items:
+                      description: NIC is a physical network interface and its OS-level
+                        IP configuration.
+                      properties:
+                        dhcp:
+                          description: dhcp is true when the address was obtained
+                            via DHCP.
+                          type: boolean
+                        dnsServers:
+                          items:
+                            type: string
+                          type: array
+                        gateway:
+                          type: string
+                        ipAddresses:
+                          description: ipAddresses in CIDR notation.
+                          items:
+                            type: string
+                          type: array
+                        linkSpeedMbps:
+                          format: int32
+                          type: integer
+                        mac:
+                          type: string
+                        name:
+                          type: string
+                        vlanID:
+                          description: vlanID is set for tagged sub-interfaces.
+                          format: int32
+                          type: integer
+                      required:
+                      - mac
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - mac
+                    x-kubernetes-list-type: map
+                  os:
+                    properties:
+                      distribution:
+                        description: distribution, e.g. "rhel", "ubuntu", "sles",
+                          "windows-server".
+                        type: string
+                      family:
+                        description: OSFamily is the broad operating system family.
+                        enum:
+                        - linux
+                        - windows
+                        - unknown
+                        type: string
+                      hostname:
+                        type: string
+                      version:
+                        type: string
+                    type: object
+                  warnings:
+                    description: warnings are human-readable migration risks (e.g.
+                      "BitLocker enabled on C:").
+                    items:
+                      type: string
+                    type: array
+                required:
+                - collectedAt
+                - collectedBy
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

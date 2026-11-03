@@ -1,0 +1,20 @@
+[
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": ["/p2v/migrations", "/p2v/ns/:ns/migrations"],
+      "component": { "$codeRef": "MigrationsPage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "metal2vm-migrations",
+      "name": "%plugin__metal2vm-console-plugin~Physical migrations%",
+      "href": "/p2v/migrations",
+      "perspective": "admin",
+      "section": "virtualization"
+    }
+  }
+]

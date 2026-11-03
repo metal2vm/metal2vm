@@ -1,0 +1,43 @@
+name: Console plugin
+
+on:
+  push:
+    paths: ["console-plugin/**", ".github/workflows/console-plugin.yml"]
+  pull_request:
+    paths: ["console-plugin/**", ".github/workflows/console-plugin.yml"]
+
+permissions: {}
+
+jobs:
+  plugin:
+    permissions:
+      contents: read
+    name: Lint, test and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console-plugin
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: node .yarn/releases/yarn-4.14.1.cjs install --immutable
+
+      - name: Lint
+        run: node .yarn/releases/yarn-4.14.1.cjs lint && git diff --exit-code
+
+      - name: Test
+        run: node .yarn/releases/yarn-4.14.1.cjs test
+
+      - name: Build
+        run: node .yarn/releases/yarn-4.14.1.cjs build

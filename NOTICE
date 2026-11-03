@@ -1,0 +1,28 @@
+metal2vm
+Copyright 2026 The metal2vm Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software derived from:
+
+- openshift/console-plugin-template (branch release-4.22, commit 1fdacd5)
+  https://github.com/openshift/console-plugin-template
+  Copyright Red Hat, Inc. Licensed under the Apache License, Version 2.0.
+  Used as the starting point of console-plugin/.
+
+- Kubebuilder project scaffolding (v4.16.0)
+  https://github.com/kubernetes-sigs/kubebuilder
+  Copyright The Kubernetes Authors. Licensed under the Apache License, Version 2.0.
+
+- test/crds/routes.route.openshift.io.yaml, copied from openshift/api
+  https://github.com/openshift/api
+  Copyright Red Hat, Inc. Licensed under the Apache License, Version 2.0.
+  Used only by the test suite.
+
+metal2vm container images also redistribute third-party programs that run as
+separate processes and are not linked with metal2vm code. See
+THIRD_PARTY_LICENSES.md.
+
+"OpenShift" and "Red Hat" are trademarks of Red Hat, Inc. "KubeVirt" is a
+project of the Cloud Native Computing Foundation. metal2vm is an independent
+project and is not affiliated with or endorsed by Red Hat or the CNCF.

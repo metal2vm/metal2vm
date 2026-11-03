@@ -1,0 +1,12 @@
+# Cluster-wide settings. Must be named "cluster".
+apiVersion: migration.metal2vm.io/v1alpha1
+kind: P2VConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: metal2vm
+    app.kubernetes.io/managed-by: kustomize
+  name: cluster
+spec:
+  gateway:
+    exposure: Route
+  agentTokenTTL: 24h

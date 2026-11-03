@@ -1,0 +1,381 @@
+/*
+Copyright 2026 The metal2vm Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	routev1 "github.com/openshift/api/route/v1"
+
+	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
+)
+
+// Condition types set on P2VMigration.
+const (
+	ConditionPreflightPassed = "PreflightPassed"
+	ConditionAgentConnected  = "AgentConnected"
+	ConditionCopied          = "Copied"
+)
+
+// requeueSoon moves to the next phase promptly after a phase change.
+var requeueSoon = ctrl.Result{RequeueAfter: 200 * time.Millisecond}
+
+// P2VMigrationReconciler drives a migration through its phases.
+type P2VMigrationReconciler struct {
+	client.Client
+	Scheme *runtime.Scheme
+	// Namespace is the operator namespace (gateway CA lives there).
+	Namespace string
+	// TransferImage is the default transfer pod image; P2VConfig can override it.
+	TransferImage string
+	// HTTP polls transfer pods; nil uses a client with a short timeout.
+	HTTP *http.Client
+	Now  func() time.Time
+}
+
+// +kubebuilder:rbac:groups=migration.metal2vm.io,resources=p2vmigrations,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=migration.metal2vm.io,resources=p2vmigrations/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=migration.metal2vm.io,resources=p2vmigrations/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=storageprofiles,verbs=get;list;watch
+// +kubebuilder:rbac:groups=config.openshift.io,resources=ingresses,verbs=get;list;watch
+
+func (r *P2VMigrationReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+// Reconcile advances the migration by at most one phase per call.
+func (r *P2VMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	var m migrationv1alpha1.P2VMigration
+	if err := r.Get(ctx, req.NamespacedName, &m); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	orig := m.DeepCopy()
+	res, err := r.step(ctx, &m)
+	if !equality.Semantic.DeepEqual(orig.Status, m.Status) {
+		if perr := r.Status().Patch(ctx, &m, client.MergeFrom(orig)); perr != nil && err == nil {
+			err = perr
+		}
+	}
+	return res, err
+}
+
+func (r *P2VMigrationReconciler) step(ctx context.Context, m *migrationv1alpha1.P2VMigration) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	switch m.Status.Phase {
+	case "", migrationv1alpha1.PhasePending:
+		now := metav1.NewTime(r.now())
+		m.Status.StartedAt = &now
+		r.setPhase(m, migrationv1alpha1.PhasePreflight, "running pre-flight checks")
+		return requeueSoon, nil
+
+	case migrationv1alpha1.PhasePreflight:
+		src, results, err := r.preflight(ctx, m)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		m.Status.Preflight = results
+		if blocked := firstBlocker(results); blocked != nil {
+			setCondition(m, ConditionPreflightPassed, metav1.ConditionFalse, "Blocked", blocked.Message)
+			m.Status.Message = "pre-flight check failed: " + blocked.Message
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
+		setCondition(m, ConditionPreflightPassed, metav1.ConditionTrue, "Passed", "all pre-flight checks passed")
+		r.setPhase(m, migrationv1alpha1.PhaseBooting, bootMessage(m, src))
+		return requeueSoon, nil
+
+	case migrationv1alpha1.PhaseBooting:
+		src, err := r.source(ctx, m)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if src == nil || !agentConnected(src) {
+			m.Status.Message = bootMessage(m, src)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		setCondition(m, ConditionAgentConnected, metav1.ConditionTrue, "Connected", "the live agent is connected")
+		m.Status.Agent = src.Status.Agent.DeepCopy()
+		r.setPhase(m, migrationv1alpha1.PhaseConnected, "live agent connected")
+		return requeueSoon, nil
+
+	case migrationv1alpha1.PhaseConnected:
+		src, err := r.source(ctx, m)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if src == nil || src.Status.Inventory == nil {
+			r.fail(m, "the P2VSource or its inventory disappeared")
+			return ctrl.Result{}, nil
+		}
+		// The live agent's inventory is authoritative for sizes and device paths.
+		for _, d := range m.Spec.Disks {
+			if d.Action != migrationv1alpha1.DiskSkip && findDisk(src.Status.Inventory, d.SourceDiskID) == nil {
+				r.fail(m, fmt.Sprintf("disk %s is not present on the booted server", d.SourceDiskID))
+				return ctrl.Result{}, nil
+			}
+		}
+		r.setPhase(m, migrationv1alpha1.PhaseCopying, "preparing disk copy")
+		return requeueSoon, nil
+
+	case migrationv1alpha1.PhaseCopying:
+		res, err := r.reconcileCopy(ctx, m)
+		if err != nil {
+			log.Error(err, "copy step failed")
+		}
+		return res, err
+
+	case migrationv1alpha1.PhaseConverting:
+		// Conversion (virt-v2v-in-place) and VM creation arrive in milestone M3.
+		m.Status.Message = "disks copied; guest conversion is not implemented yet (milestone M3)"
+		return ctrl.Result{}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *P2VMigrationReconciler) setPhase(m *migrationv1alpha1.P2VMigration, p migrationv1alpha1.MigrationPhase, msg string) {
+	m.Status.Phase = p
+	m.Status.Message = msg
+}
+
+func (r *P2VMigrationReconciler) fail(m *migrationv1alpha1.P2VMigration, msg string) {
+	now := metav1.NewTime(r.now())
+	m.Status.CompletedAt = &now
+	r.setPhase(m, migrationv1alpha1.PhaseFailed, msg)
+	setCondition(m, "Ready", metav1.ConditionFalse, "Failed", msg)
+}
+
+func setCondition(m *migrationv1alpha1.P2VMigration, t string, s metav1.ConditionStatus, reason, msg string) {
+	apimeta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type: t, Status: s, Reason: reason, Message: msg, ObservedGeneration: m.Generation,
+	})
+}
+
+func bootMessage(m *migrationv1alpha1.P2VMigration, src *migrationv1alpha1.P2VSource) string {
+	secret := BootSecretName(m.Spec.SourceRef.Name)
+	if src != nil && src.Status.BootMedia != nil {
+		secret = src.Status.BootMedia.SecretName
+	}
+	return fmt.Sprintf("waiting for the live agent: boot %s from the ISO in Secret %s (key isoURL)",
+		m.Spec.SourceRef.Name, secret)
+}
+
+func agentConnected(src *migrationv1alpha1.P2VSource) bool {
+	return src.Status.Agent != nil && src.Status.Agent.Connected &&
+		src.Status.Inventory != nil && src.Status.Inventory.CollectedBy == migrationv1alpha1.InventoryFromLiveAgent
+}
+
+func (r *P2VMigrationReconciler) source(ctx context.Context, m *migrationv1alpha1.P2VMigration) (*migrationv1alpha1.P2VSource, error) {
+	var src migrationv1alpha1.P2VSource
+	err := r.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: m.Spec.SourceRef.Name}, &src)
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	return &src, err
+}
+
+func findDisk(inv *migrationv1alpha1.Inventory, id string) *migrationv1alpha1.Disk {
+	if inv == nil {
+		return nil
+	}
+	for i := range inv.Disks {
+		if inv.Disks[i].ID == id {
+			return &inv.Disks[i]
+		}
+	}
+	return nil
+}
+
+func firstBlocker(results []migrationv1alpha1.PreflightResult) *migrationv1alpha1.PreflightResult {
+	for i := range results {
+		if !results[i].Passed && results[i].Severity == migrationv1alpha1.SeverityBlocker {
+			return &results[i]
+		}
+	}
+	return nil
+}
+
+// activePhases are phases in which a migration holds its source.
+var activePhases = map[migrationv1alpha1.MigrationPhase]bool{
+	migrationv1alpha1.PhaseBooting: true, migrationv1alpha1.PhaseConnected: true,
+	migrationv1alpha1.PhaseCopying: true, migrationv1alpha1.PhaseConverting: true,
+	migrationv1alpha1.PhaseReadyForTest: true, migrationv1alpha1.PhaseTesting: true,
+	migrationv1alpha1.PhaseCuttingOver: true, migrationv1alpha1.PhaseRollingBack: true,
+}
+
+// preflight evaluates every check; it never stops at the first failure so the
+// admin sees all problems at once.
+func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1alpha1.P2VMigration) (
+	*migrationv1alpha1.P2VSource, []migrationv1alpha1.PreflightResult, error) {
+	var results []migrationv1alpha1.PreflightResult
+	add := func(name string, ok bool, sev migrationv1alpha1.PreflightSeverity, msg string) {
+		results = append(results, migrationv1alpha1.PreflightResult{Name: name, Passed: ok, Severity: sev, Message: msg})
+	}
+	B, W := migrationv1alpha1.SeverityBlocker, migrationv1alpha1.SeverityWarning
+
+	src, err := r.source(ctx, m)
+	if err != nil {
+		return nil, nil, err
+	}
+	add("SourceFound", src != nil, B, "P2VSource "+m.Spec.SourceRef.Name+" must exist in this namespace")
+	add("ModeSupported", m.Spec.Mode != migrationv1alpha1.ModeWarm, B, "warm migration is not available yet; use cold")
+	add("BootMethodSupported", m.Spec.BootMethod == "" || m.Spec.BootMethod == migrationv1alpha1.BootManual, B,
+		"only manual boot (USB/virtual media from the ISO) is available yet")
+
+	var cfg migrationv1alpha1.P2VConfig
+	if err := r.Get(ctx, types.NamespacedName{Name: migrationv1alpha1.P2VConfigSingletonName}, &cfg); client.IgnoreNotFound(err) != nil {
+		return nil, nil, err
+	}
+	add("GatewayAvailable", cfg.Status.GatewayURL != "", B, "the metal2vm gateway must be available (P2VConfig \"cluster\")")
+
+	var others migrationv1alpha1.P2VMigrationList
+	if err := r.List(ctx, &others, client.InNamespace(m.Namespace)); err != nil {
+		return nil, nil, err
+	}
+	busy := ""
+	for _, o := range others.Items {
+		if o.Name != m.Name && o.Spec.SourceRef.Name == m.Spec.SourceRef.Name && activePhases[o.Status.Phase] {
+			busy = o.Name
+		}
+	}
+	add("SourceNotBusy", busy == "", B, "P2VMigration "+busy+" is already migrating this source")
+
+	var inv *migrationv1alpha1.Inventory
+	if src != nil {
+		inv = src.Status.Inventory
+	}
+	add("InventoryAvailable", inv != nil, B,
+		"the source has no inventory yet: boot it from its ISO once, or run the OS pre-check")
+
+	copies, unknown, encrypted, attach := 0, "", "", ""
+	for _, d := range m.Spec.Disks {
+		disk := findDisk(inv, d.SourceDiskID)
+		if inv != nil && disk == nil && d.Action != migrationv1alpha1.DiskSkip {
+			unknown = d.SourceDiskID
+		}
+		if disk != nil && disk.Encrypted && d.Action != migrationv1alpha1.DiskSkip {
+			encrypted = d.SourceDiskID
+		}
+		switch d.Action {
+		case migrationv1alpha1.DiskCopy:
+			copies++
+		case migrationv1alpha1.DiskAttach:
+			attach = d.SourceDiskID
+		}
+	}
+	add("DisksKnown", unknown == "", B, "disk "+unknown+" is not in the source inventory")
+	add("DiskActionsSupported", attach == "", B, "re-attaching SAN LUNs (disk "+attach+") is not available yet")
+	add("DisksToCopy", copies > 0, B, "at least one disk must be copied")
+	add("NoEncryptedDisks", encrypted == "", W,
+		"disk "+encrypted+" holds an encrypted volume; conversion will need it unlocked or its key")
+
+	missingSC := ""
+	for _, d := range m.Spec.Disks {
+		if d.Action != migrationv1alpha1.DiskCopy {
+			continue
+		}
+		sc, err := r.storageClassFor(ctx, d, &cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sc == "" {
+			missingSC = d.SourceDiskID
+		}
+	}
+	add("StorageClassAvailable", missingSC == "", B,
+		"no usable StorageClass for disk "+missingSC+": set storageClassName, P2VConfig defaultStorageClassName, or a cluster default")
+	return src, results, nil
+}
+
+// storageClassFor resolves a disk's StorageClass: plan, then P2VConfig, then
+// the cluster default. It returns "" when none exists.
+func (r *P2VMigrationReconciler) storageClassFor(ctx context.Context, d migrationv1alpha1.DiskMapping,
+	cfg *migrationv1alpha1.P2VConfig) (string, error) {
+	for _, name := range []string{d.StorageClassName, cfg.Spec.DefaultStorageClassName} {
+		if name == "" {
+			continue
+		}
+		var sc storagev1.StorageClass
+		err := r.Get(ctx, types.NamespacedName{Name: name}, &sc)
+		if err == nil {
+			return name, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return "", err
+		}
+		return "", nil
+	}
+	var list storagev1.StorageClassList
+	if err := r.List(ctx, &list); err != nil {
+		return "", err
+	}
+	for _, sc := range list.Items {
+		if sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+			return sc.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *P2VMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Agent connection changes on the P2VSource move migrations out of Booting.
+	bySource := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, o client.Object) []reconcile.Request {
+		var list migrationv1alpha1.P2VMigrationList
+		if err := mgr.GetClient().List(ctx, &list, client.InNamespace(o.GetNamespace())); err != nil {
+			return nil
+		}
+		var reqs []reconcile.Request
+		for _, m := range list.Items {
+			if m.Spec.SourceRef.Name == o.GetName() {
+				reqs = append(reqs, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&m)})
+			}
+		}
+		return reqs
+	})
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&migrationv1alpha1.P2VMigration{}).
+		Owns(&corev1.Pod{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&routev1.Route{}).
+		Watches(&migrationv1alpha1.P2VSource{}, bySource).
+		Named("p2vmigration").
+		Complete(r)
+}

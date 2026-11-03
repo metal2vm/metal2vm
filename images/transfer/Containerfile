@@ -1,0 +1,22 @@
+# Transfer pod image: accepts the live agent's tunnel and copies disks into
+# PVCs with nbdcopy (libnbd). Guest conversion (virt-v2v) is added in M3.
+# Build from the repository root: -f images/transfer/Containerfile .
+ARG BASE_IMAGE=docker.io/library/golang:1.27
+FROM ${BASE_IMAGE} AS builder
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o metal2vm-transfer ./cmd/transfer
+
+FROM quay.io/centos/centos:stream10
+# Install by file path so the image does not depend on package naming.
+RUN dnf -y install --setopt=install_weak_deps=False --nodocs /usr/bin/nbdcopy && \
+    dnf clean all && rm -rf /var/cache/dnf
+COPY --from=builder /workspace/metal2vm-transfer /usr/local/bin/metal2vm-transfer
+COPY LICENSE NOTICE /licenses/
+LABEL org.opencontainers.image.title="metal2vm transfer" \
+      org.opencontainers.image.licenses="Apache-2.0"
+USER 1001
+ENTRYPOINT ["/usr/local/bin/metal2vm-transfer"]

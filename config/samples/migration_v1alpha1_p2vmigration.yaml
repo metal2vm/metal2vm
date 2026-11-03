@@ -1,0 +1,36 @@
+# Cold migration of web01: copy the boot disk, re-attach an existing iSCSI data
+# LUN, keep the server's IP and MAC on a bridged VLAN.
+apiVersion: migration.metal2vm.io/v1alpha1
+kind: P2VMigration
+metadata:
+  labels:
+    app.kubernetes.io/name: metal2vm
+    app.kubernetes.io/managed-by: kustomize
+  name: web01
+spec:
+  sourceRef:
+    name: web01
+  mode: cold
+  bootMethod: redfish
+  targetVM:
+    name: web01
+    memory: 16Gi
+  disks:
+    - sourceDiskID: wwn-0x5000c500a1b2c3d4
+      action: copy
+      storageClassName: ocs-storagecluster-ceph-rbd-virtualization
+    - sourceDiskID: wwn-0x600a098038304437
+      action: attach
+      lun:
+        iscsi:
+          targetPortal: 10.20.0.5:3260
+          iqn: iqn.1992-08.com.netapp:sn.web01data
+          lun: 0
+  nics:
+    - sourceMAC: "3c:ec:ef:12:34:56"
+      type: multus
+      networkName: vlan100
+      keepMAC: true
+      keepIP: true
+  testBoot: true
+  autoShutdownSource: true
