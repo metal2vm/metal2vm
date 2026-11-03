@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,7 @@ import (
 
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
 	"github.com/metal2vm/metal2vm/internal/gateway"
+	"github.com/metal2vm/metal2vm/internal/precheck"
 	"github.com/metal2vm/metal2vm/internal/tokens"
 )
 
@@ -48,12 +50,43 @@ const (
 	agentTimeout = 90 * time.Second
 )
 
-// P2VSourceReconciler issues boot media for physical servers and tracks the agent.
+// P2VSourceReconciler issues boot media for physical servers, tracks the
+// agent and runs the OS pre-check.
 type P2VSourceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	Now    func() time.Time
+	// APIReader reads credentials Secrets, which are not in the cache.
+	APIReader client.Reader
+	// PreCheck runs the OS pre-check; defaults to SSH/WinRM.
+	PreCheck PreCheckFunc
+	Now      func() time.Time
+
+	lastAttempt sync.Map // namespace/name -> time.Time
 }
+
+// PreCheckFunc reads the running OS's configuration.
+type PreCheckFunc func(ctx context.Context, access migrationv1alpha1.OSAccess, creds precheck.Credentials,
+	caCert []byte, knownHostKey string) (*migrationv1alpha1.OSConfig, error)
+
+// DefaultPreCheck uses SSH for Linux and WinRM (NTLM) for Windows.
+func DefaultPreCheck(ctx context.Context, a migrationv1alpha1.OSAccess, creds precheck.Credentials,
+	caCert []byte, knownHostKey string) (*migrationv1alpha1.OSConfig, error) {
+	if a.Type == migrationv1alpha1.OSAccessWinRM {
+		https := a.Port == 0 || a.Port == 5986
+		return precheck.WinRM(ctx, a.Address, a.Port, creds,
+			precheck.WinRMOptions{HTTPS: https, Insecure: a.InsecureSkipVerify, CACert: caCert})
+	}
+	return precheck.SSH(ctx, a.Address, a.Port, creds, knownHostKey)
+}
+
+const (
+	// ConditionOSReachable is set on P2VSource by the OS pre-check.
+	ConditionOSReachable = "OSReachable"
+	// AnnotationPreCheck re-runs the OS pre-check when set to a newer RFC3339 time.
+	AnnotationPreCheck = "metal2vm.io/precheck-requested"
+	preCheckRetry      = 2 * time.Minute
+	preCheckTimeout    = 45 * time.Second
+)
 
 // +kubebuilder:rbac:groups=migration.metal2vm.io,resources=p2vsources,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=migration.metal2vm.io,resources=p2vsources/status,verbs=get;update;patch
@@ -116,6 +149,12 @@ func (r *P2VSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		requeue = time.Until(expiresAt) + time.Second
 	}
 
+	if src.Spec.OSAccess != nil {
+		if wait := r.reconcilePreCheck(ctx, &src); wait > 0 {
+			requeue = min(requeue, wait)
+		}
+	}
+
 	// The gateway sets connected=true on every heartbeat; time it out here.
 	if a := src.Status.Agent; a != nil && a.Connected && a.LastHeartbeat != nil {
 		if idle := r.now().Sub(a.LastHeartbeat.Time); idle > agentTimeout {
@@ -131,6 +170,62 @@ func (r *P2VSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 	return ctrl.Result{RequeueAfter: max(requeue, time.Second)}, nil
+}
+
+// reconcilePreCheck runs the OS pre-check when it has never succeeded or was
+// requested again, at most every preCheckRetry after a failure. It returns
+// when to look again (0: nothing pending).
+func (r *P2VSourceReconciler) reconcilePreCheck(ctx context.Context, src *migrationv1alpha1.P2VSource) time.Duration {
+	osc := src.Status.OSConfig
+	requested, _ := time.Parse(time.RFC3339, src.Annotations[AnnotationPreCheck])
+	if osc != nil && !requested.After(osc.CollectedAt.Time) {
+		return 0
+	}
+	key := src.Namespace + "/" + src.Name
+	if last, ok := r.lastAttempt.Load(key); ok {
+		if wait := preCheckRetry - r.now().Sub(last.(time.Time)); wait > 0 {
+			return wait
+		}
+	}
+	r.lastAttempt.Store(key, r.now())
+
+	fail := func(reason, msg string) time.Duration {
+		apimeta.SetStatusCondition(&src.Status.Conditions, metav1.Condition{
+			Type: ConditionOSReachable, Status: metav1.ConditionFalse, Reason: reason, Message: msg, ObservedGeneration: src.Generation,
+		})
+		return preCheckRetry
+	}
+	a := *src.Spec.OSAccess
+	var sec corev1.Secret
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: src.Namespace, Name: a.CredentialsSecretRef.Name}, &sec); err != nil {
+		return fail("CredentialsUnavailable", "reading Secret "+a.CredentialsSecretRef.Name+": "+err.Error())
+	}
+	creds := precheck.Credentials{
+		Username: string(sec.Data["username"]), Password: string(sec.Data["password"]), PrivateKey: sec.Data["ssh-privatekey"],
+	}
+	known := ""
+	if osc != nil {
+		known = osc.HostKeyFingerprint
+	}
+	run := r.PreCheck
+	if run == nil {
+		run = DefaultPreCheck
+	}
+	pctx, cancel := context.WithTimeout(ctx, preCheckTimeout)
+	defer cancel()
+	res, err := run(pctx, a, creds, sec.Data["ca.crt"], known)
+	if err != nil {
+		return fail("PreCheckFailed", err.Error())
+	}
+	res.CollectedAt = metav1.NewTime(r.now())
+	src.Status.OSConfig = res
+	apimeta.SetStatusCondition(&src.Status.Conditions, metav1.Condition{
+		Type: ConditionOSReachable, Status: metav1.ConditionTrue, Reason: "PreCheckSucceeded",
+		Message:            fmt.Sprintf("%s %s %s: %d NIC(s)", res.OS.Hostname, res.OS.Distribution, res.OS.Version, len(res.NICs)),
+		ObservedGeneration: src.Generation,
+	})
+	r.lastAttempt.Delete(key)
+	return 0
 }
 
 // ensureBootSecret creates or rotates the source's boot credentials and keeps

@@ -20,6 +20,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	routev1 "github.com/openshift/api/route/v1"
@@ -37,6 +40,7 @@ import (
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
 	"github.com/metal2vm/metal2vm/internal/convert"
 	"github.com/metal2vm/metal2vm/internal/names"
+	"github.com/metal2vm/metal2vm/internal/netfix"
 	"github.com/metal2vm/metal2vm/internal/vmbuilder"
 )
 
@@ -94,7 +98,7 @@ func (r *P2VMigrationReconciler) reconcileConvert(ctx context.Context, m *migrat
 			return ctrl.Result{}, fmt.Errorf("conversion service account: %w", err)
 		}
 	}
-	pod, err := r.ensureConvertPod(ctx, m, &cfg, src.Status.Inventory, plan)
+	pod, err := r.ensureConvertPod(ctx, m, &cfg, src.Status.Inventory, src.Status.OSConfig, plan)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -132,6 +136,62 @@ func (r *P2VMigrationReconciler) reconcileConvert(ctx context.Context, m *migrat
 	}
 }
 
+// networkPlan maps the planned NICs for guest conversion. A NIC keeps its IP
+// configuration only on a bridged network with keepIP; everywhere else (pod
+// network, new subnet) it is switched to DHCP. Interface names and static
+// IPs come from the OS pre-check when available.
+func networkPlan(m *migrationv1alpha1.P2VMigration, osc *migrationv1alpha1.OSConfig) (netfix.Plan, []string) {
+	var p netfix.Plan
+	var staticIPs []string
+	for _, n := range m.Spec.NICs {
+		src := strings.ToLower(n.SourceMAC)
+		target := vmbuilder.TargetMAC(m, n)
+		keepIP := n.Type == migrationv1alpha1.NetworkMultus && n.KeepIP
+		nic := netfix.NIC{SourceMAC: src, TargetMAC: target, DHCP: !keepIP}
+		if osNIC := findOSNIC(osc, src); osNIC != nil {
+			nic.OldName = osNIC.Name
+			// Windows forgets static IPs when the NIC changes; virt-v2v re-applies
+			// them (ignored for Linux, whose files netfix keeps).
+			if keepIP && !osNIC.DHCP {
+				if arg := staticIPArg(target, osNIC); arg != "" {
+					staticIPs = append(staticIPs, arg)
+				}
+			}
+		}
+		p.NICs = append(p.NICs, nic)
+	}
+	return p, staticIPs
+}
+
+func findOSNIC(osc *migrationv1alpha1.OSConfig, mac string) *migrationv1alpha1.NIC {
+	if osc == nil {
+		return nil
+	}
+	for i := range osc.NICs {
+		if strings.EqualFold(osc.NICs[i].MAC, mac) {
+			return &osc.NICs[i]
+		}
+	}
+	return nil
+}
+
+// staticIPArg renders virt-v2v's --mac MAC:ip:IP,GW,LEN,DNS... for the first
+// IPv4 address of nic.
+func staticIPArg(mac string, nic *migrationv1alpha1.NIC) string {
+	for _, cidr := range nic.IPAddresses {
+		ip, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil || ip.To4() == nil {
+			continue
+		}
+		ones, _ := ipnet.Mask.Size()
+		parts := make([]string, 0, 3+len(nic.DNSServers))
+		parts = append(parts, ip.String(), nic.Gateway, strconv.Itoa(ones))
+		parts = append(parts, nic.DNSServers...)
+		return mac + ":ip:" + strings.Join(parts, ",")
+	}
+	return ""
+}
+
 func testingMessage(m *migrationv1alpha1.P2VMigration) string {
 	return fmt.Sprintf("VM %s is running WITHOUT network for testing. Open its console to check it, "+
 		"then cut over (set spec.cutover) or roll back (set spec.rollback).", vmbuilder.Name(m))
@@ -157,6 +217,7 @@ func (r *P2VMigrationReconciler) recordGuest(m *migrationv1alpha1.P2VMigration, 
 	m.Status.Guest = &migrationv1alpha1.GuestInfo{
 		Family: family, Distro: res.OS.Distro, OSInfo: res.OS.OSInfo,
 		ProductName: res.OS.ProductName, Firmware: migrationv1alpha1.FirmwareType(res.Firmware),
+		NetworkNotes: res.NetworkNotes,
 	}
 	boot := map[string]int32{}
 	for _, d := range res.Disks {
@@ -189,7 +250,8 @@ func (r *P2VMigrationReconciler) ensureConversionIdentity(ctx context.Context, n
 }
 
 func (r *P2VMigrationReconciler) ensureConvertPod(ctx context.Context, m *migrationv1alpha1.P2VMigration,
-	cfg *migrationv1alpha1.P2VConfig, inv *migrationv1alpha1.Inventory, plan copyPlan) (*corev1.Pod, error) {
+	cfg *migrationv1alpha1.P2VConfig, inv *migrationv1alpha1.Inventory, osConfig *migrationv1alpha1.OSConfig,
+	plan copyPlan) (*corev1.Pod, error) {
 	name := names.Short(m.Name, "-convert")
 	var pod corev1.Pod
 	err := r.Get(ctx, types.NamespacedName{Namespace: m.Namespace, Name: name}, &pod)
@@ -203,6 +265,7 @@ func (r *P2VMigrationReconciler) ensureConvertPod(ctx context.Context, m *migrat
 		VCPUs:     max(inv.CPU.Sockets, 1) * max(inv.CPU.CoresPerSocket, 1) * max(inv.CPU.ThreadsPerCore, 1),
 		Firmware:  string(inv.Firmware.Type),
 	}
+	cp.Network, cp.StaticIPs = networkPlan(m, osConfig)
 	var volumes []corev1.Volume
 	var devices []corev1.VolumeDevice
 	var mounts []corev1.VolumeMount

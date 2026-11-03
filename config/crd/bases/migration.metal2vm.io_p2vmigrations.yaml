@@ -250,7 +250,9 @@ spec:
                 type: object
                 x-kubernetes-map-type: atomic
               targetVM:
-                description: targetVM describes the VirtualMachine to create.
+                description: |-
+                  targetVM describes the VirtualMachine to create. Everything defaults
+                  from the source inventory.
                 properties:
                   cpu:
                     description: cpu topology. Defaults to the source topology.
@@ -313,7 +315,6 @@ spec:
             required:
             - disks
             - sourceRef
-            - targetVM
             type: object
           status:
             description: status defines the observed state of P2VMigration
@@ -447,6 +448,12 @@ spec:
                     - bios
                     - uefi
                     type: string
+                  networkNotes:
+                    description: networkNotes explains how the guest's network config
+                      was adapted.
+                    items:
+                      type: string
+                    type: array
                   osinfo:
                     description: osinfo is the libosinfo short ID, e.g. rhel9.8, win2k22.
                     type: string

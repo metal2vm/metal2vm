@@ -92,6 +92,27 @@ func TestBuildLinuxUEFI(t *testing.T) {
 	}
 }
 
+func TestTargetMAC(t *testing.T) {
+	m := migration()
+	bridged := v1alpha1.NICMapping{SourceMAC: "3C:EC:EF:12:34:56", Type: v1alpha1.NetworkMultus, NetworkName: "v"}
+	got := TargetMAC(m, bridged)
+	if got == "3c:ec:ef:12:34:56" || got[:3] != "02:" || len(got) != 17 {
+		t.Fatalf("bridged without keepMAC: %q", got)
+	}
+	if TargetMAC(m, bridged) != got {
+		t.Fatal("generated MAC must be stable")
+	}
+	m2 := migration()
+	m2.Name = "other"
+	if TargetMAC(m2, bridged) == got {
+		t.Fatal("generated MAC must differ per migration")
+	}
+	bridged.KeepMAC = true
+	if TargetMAC(m, bridged) != "3c:ec:ef:12:34:56" {
+		t.Fatal("keepMAC must keep the source MAC")
+	}
+}
+
 func TestBuildTestBootHasNoNICs(t *testing.T) {
 	vm, err := Build(Input{Migration: migration(), Inventory: uefiInventory, Guest: rhel(), TestBoot: true,
 		Volumes: []Volume{{PVC: "p", Index: 0}}})

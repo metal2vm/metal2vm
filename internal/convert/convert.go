@@ -29,6 +29,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/metal2vm/metal2vm/internal/netfix"
 )
 
 // Plan is the conversion pod's input, passed as JSON in $CONVERT_PLAN.
@@ -41,6 +43,8 @@ type Plan struct {
 	Disks    []Disk `json:"disks"`
 	// StaticIPs are virt-v2v --mac values, "MAC:ip:IP,GW,LEN,DNS..." (Windows only).
 	StaticIPs []string `json:"staticIPs,omitempty"`
+	// Network keeps Linux network config working on the VM NICs.
+	Network netfix.Plan `json:"network,omitzero"`
 }
 
 // Disk is one copied disk: a block device or a disk.img file.
@@ -54,7 +58,9 @@ type Result struct {
 	Firmware string     `json:"firmware,omitempty"`
 	OS       OS         `json:"os"`
 	Disks    []DiskInfo `json:"disks,omitempty"`
-	Error    string     `json:"error,omitempty"`
+	// NetworkNotes explains what was done to the guest's network config.
+	NetworkNotes []string `json:"networkNotes,omitempty"`
+	Error        string   `json:"error,omitempty"`
 }
 
 // OS identifies the converted guest.
@@ -188,8 +194,19 @@ func Args(p Plan, domainXML, inspectionXML string) []string {
 	return args
 }
 
-// Run converts the guest described by p, streaming virt-v2v's output to log.
-func Run(ctx context.Context, p Plan, v2v, workDir string, log io.Writer) (Result, error) {
+// Run converts the guest described by p, streaming output to log: network
+// fix-up with guestfish first, then virt-v2v-in-place.
+func Run(ctx context.Context, p Plan, v2v, guestfish, workDir string, log io.Writer) (Result, error) {
+	notes, err := FixNetwork(ctx, p, guestfish, workDir, log)
+	if err != nil {
+		return Result{NetworkNotes: notes}, err
+	}
+	res, err := runV2V(ctx, p, v2v, workDir, log)
+	res.NetworkNotes = notes
+	return res, err
+}
+
+func runV2V(ctx context.Context, p Plan, v2v, workDir string, log io.Writer) (Result, error) {
 	domain, err := DomainXML(p)
 	if err != nil {
 		return Result{}, err
@@ -248,6 +265,13 @@ func (t *tailBuffer) lastError() string {
 func WriteTermination(path string, r Result) {
 	if len(r.Error) > 1500 {
 		r.Error = r.Error[:1500]
+	}
+	// Termination messages are limited to 4 KiB.
+	for len(r.NetworkNotes) > 0 {
+		if b, _ := json.Marshal(r); len(b) < 3800 {
+			break
+		}
+		r.NetworkNotes = r.NetworkNotes[:len(r.NetworkNotes)-1]
 	}
 	if b, err := json.Marshal(r); err == nil {
 		_ = os.WriteFile(path, b, 0o644)

@@ -231,6 +231,20 @@ Maps the inventory and plan to a KubeVirt `VirtualMachine`:
   - Still open for M6: interface **names** that change with the hardware (for example `eno1` becoming `enp1s0`) and static IPs. These need the OS pre-check data and a conversion-time rewrite.
 - **Known risk:** the first boot after migration is the offline test boot, and first-boot tools can remember "no network".
 
+### 3.8.4 As built: network identity (part of M6)
+- **OS pre-check** (`P2VSource.spec.osAccess`, run while the server's own OS is up):
+  - Linux: SSH running only read-only commands (`ip -o link/addr/route`, `os-release`, `resolv.conf`, `lsblk`). DHCP versus static comes from the kernel's `dynamic` address flag. The host key is trusted on first use and pinned (`status.osConfig.hostKeyFingerprint`).
+  - Windows: WinRM (NTLM) with one PowerShell query. DHCP versus static comes from `PrefixOrigin`. BitLocker is reported too.
+  - The result goes to `status.osConfig`, which the live agent never overwrites. Re-run it with the `metal2vm.io/precheck-requested` annotation. Failures back off for 2 minutes.
+- **VM NIC MAC** (`vmbuilder.TargetMAC`): the source MAC on the pod network or with `keepMAC`. Otherwise a stable, locally administered MAC derived from the migration. It's known before conversion.
+- **Linux guest edits** (`internal/netfix`, a pure Go library; applied with guestfish *before* virt-v2v so its SELinux relabel covers them):
+  1. Source MACs are rewritten to the VM MAC in NetworkManager keyfiles, RHEL and SUSE ifcfg, netplan, Debian ENI, systemd-networkd and `70-persistent-net.rules`.
+  2. The installed OS's interface name (from the pre-check, otherwise discovered in those files) is pinned with `/etc/systemd/network/10-metal2vm-<name>.link`. Kernel `ethN` names and `net.ifnames=0` guests are left alone.
+  3. NICs not on "bridged + keepIP" are switched from static to DHCP in whichever format configures them.
+- **Windows:** the new virtio adapter starts with DHCP. With keepIP, the static IPv4 configuration from the pre-check is re-applied through virt-v2v `--mac <vm-mac>:ip:IP,GW,LEN,DNS…`.
+- **Verified on the cluster:**
+  - A RHEL source with a static, MAC-bound `ifcfg-eth0` was migrated to an OVN layer-2 network with a new MAC. The VM came up with DHCP `192.168.77.2`. Both the MAC rewrite (ifcfg and udev rule) and the DHCP switch were required for that.
+
 ### 3.9 Required network flows (included in the docs)
 | From | To | Port | Purpose |
 |---|---|---|---|

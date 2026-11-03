@@ -94,9 +94,14 @@ type OSAccess struct {
 	Port int32 `json:"port,omitempty"`
 
 	// credentialsSecretRef names a Secret with "username" and either "password"
-	// or "ssh-privatekey".
+	// or "ssh-privatekey". For WinRM over HTTPS it may also hold "ca.crt".
 	// +required
 	CredentialsSecretRef corev1.LocalObjectReference `json:"credentialsSecretRef"`
+
+	// insecureSkipVerify disables WinRM HTTPS certificate verification
+	// (self-signed WinRM listeners).
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // P2VSourceStatus is the observed state of a physical server.
@@ -113,11 +118,36 @@ type P2VSourceStatus struct {
 	// +optional
 	Agent *AgentStatus `json:"agent,omitempty"`
 
+	// osConfig is what the OS pre-check found on the running source OS
+	// (spec.osAccess). The live agent never overwrites it.
+	// +optional
+	OSConfig *OSConfig `json:"osConfig,omitempty"`
+
 	// conditions: BootMediaReady, InventoryCollected, BMCReachable, OSReachable, Blocked.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// OSConfig is the running OS's identity and network configuration.
+type OSConfig struct {
+	// +required
+	CollectedAt metav1.Time `json:"collectedAt"`
+	// +optional
+	OS OSInfo `json:"os,omitzero"`
+	// nics as configured in the installed OS. name is the OS interface name.
+	// +listType=map
+	// +listMapKey=mac
+	// +optional
+	NICs []NIC `json:"nics,omitempty"`
+	// hostKeyFingerprint is the SSH host key (SHA256) trusted on first use;
+	// later pre-checks must present the same key.
+	// +optional
+	HostKeyFingerprint string `json:"hostKeyFingerprint,omitempty"`
+	// warnings are migration risks found in the OS (e.g. BitLocker).
+	// +optional
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // BootMediaStatus points at the Secret holding the boot media URLs and token.

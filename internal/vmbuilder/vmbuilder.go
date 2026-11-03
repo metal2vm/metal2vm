@@ -19,6 +19,7 @@ limitations under the License.
 package vmbuilder
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"slices"
 	"strings"
@@ -175,14 +176,7 @@ func Networking(m *v1alpha1.P2VMigration) ([]kubevirtv1.Interface, []kubevirtv1.
 	nets := make([]kubevirtv1.Network, 0, len(m.Spec.NICs))
 	for i, n := range m.Spec.NICs {
 		name := fmt.Sprintf("nic-%d", i)
-		iface := kubevirtv1.Interface{Name: name, Model: "virtio"}
-		// Guests often bind network config to the NIC's MAC (ifcfg HWADDR,
-		// NetworkManager mac-address, cloud-init "match: macaddress"). With
-		// masquerade the MAC never leaves the pod, so the pod network always
-		// keeps it; on bridged networks it is the admin's choice.
-		if n.KeepMAC || n.Type == v1alpha1.NetworkPod {
-			iface.MacAddress = strings.ToLower(n.SourceMAC)
-		}
+		iface := kubevirtv1.Interface{Name: name, Model: "virtio", MacAddress: TargetMAC(m, n)}
 		net := kubevirtv1.Network{Name: name}
 		switch n.Type {
 		case v1alpha1.NetworkPod:
@@ -196,6 +190,22 @@ func Networking(m *v1alpha1.P2VMigration) ([]kubevirtv1.Interface, []kubevirtv1.
 		nets = append(nets, net)
 	}
 	return ifaces, nets
+}
+
+// TargetMAC is the VM NIC's MAC for a NIC mapping. It is decided before the
+// VM exists, so guest conversion can point the network config at it.
+//
+// Guests often bind network config to the MAC (ifcfg HWADDR, NetworkManager
+// mac-address, cloud-init "match: macaddress"). With masquerade the MAC never
+// leaves the pod, so the pod network always keeps the source MAC; on bridged
+// networks keepMAC decides. Otherwise the MAC is a stable, locally
+// administered one derived from the migration and the source MAC.
+func TargetMAC(m *v1alpha1.P2VMigration, n v1alpha1.NICMapping) string {
+	if n.KeepMAC || n.Type == v1alpha1.NetworkPod {
+		return strings.ToLower(n.SourceMAC)
+	}
+	sum := sha256.Sum256([]byte(m.Namespace + "/" + m.Name + "/" + strings.ToLower(n.SourceMAC)))
+	return fmt.Sprintf("02:%02x:%02x:%02x:%02x:%02x", sum[0], sum[1], sum[2], sum[3], sum[4])
 }
 
 func cpuTopology(plan *v1alpha1.VMCPU, src v1alpha1.CPUInfo) *kubevirtv1.CPU {

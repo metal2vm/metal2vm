@@ -104,7 +104,7 @@ spec:
                   credentialsSecretRef:
                     description: |-
                       credentialsSecretRef names a Secret with "username" and either "password"
-                      or "ssh-privatekey".
+                      or "ssh-privatekey". For WinRM over HTTPS it may also hold "ca.crt".
                     properties:
                       name:
                         default: ""
@@ -117,6 +117,11 @@ spec:
                         type: string
                     type: object
                     x-kubernetes-map-type: atomic
+                  insecureSkipVerify:
+                    description: |-
+                      insecureSkipVerify disables WinRM HTTPS certificate verification
+                      (self-signed WinRM listeners).
+                    type: boolean
                   port:
                     description: port defaults to 22 (ssh) or 5986 (winrm).
                     format: int32
@@ -404,6 +409,86 @@ spec:
                 required:
                 - collectedAt
                 - collectedBy
+                type: object
+              osConfig:
+                description: |-
+                  osConfig is what the OS pre-check found on the running source OS
+                  (spec.osAccess). The live agent never overwrites it.
+                properties:
+                  collectedAt:
+                    format: date-time
+                    type: string
+                  hostKeyFingerprint:
+                    description: |-
+                      hostKeyFingerprint is the SSH host key (SHA256) trusted on first use;
+                      later pre-checks must present the same key.
+                    type: string
+                  nics:
+                    description: nics as configured in the installed OS. name is the
+                      OS interface name.
+                    items:
+                      description: NIC is a physical network interface and its OS-level
+                        IP configuration.
+                      properties:
+                        dhcp:
+                          description: dhcp is true when the address was obtained
+                            via DHCP.
+                          type: boolean
+                        dnsServers:
+                          items:
+                            type: string
+                          type: array
+                        gateway:
+                          type: string
+                        ipAddresses:
+                          description: ipAddresses in CIDR notation.
+                          items:
+                            type: string
+                          type: array
+                        linkSpeedMbps:
+                          format: int32
+                          type: integer
+                        mac:
+                          type: string
+                        name:
+                          type: string
+                        vlanID:
+                          description: vlanID is set for tagged sub-interfaces.
+                          format: int32
+                          type: integer
+                      required:
+                      - mac
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - mac
+                    x-kubernetes-list-type: map
+                  os:
+                    properties:
+                      distribution:
+                        description: distribution, e.g. "rhel", "ubuntu", "sles",
+                          "windows-server".
+                        type: string
+                      family:
+                        description: OSFamily is the broad operating system family.
+                        enum:
+                        - linux
+                        - windows
+                        - unknown
+                        type: string
+                      hostname:
+                        type: string
+                      version:
+                        type: string
+                    type: object
+                  warnings:
+                    description: warnings are migration risks found in the OS (e.g.
+                      BitLocker).
+                    items:
+                      type: string
+                    type: array
+                required:
+                - collectedAt
                 type: object
             type: object
         required:

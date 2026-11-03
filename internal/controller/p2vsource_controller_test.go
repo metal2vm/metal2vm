@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
+	"github.com/metal2vm/metal2vm/internal/precheck"
 	"github.com/metal2vm/metal2vm/internal/tokens"
 )
 
@@ -117,3 +119,71 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+var _ = Describe("P2VSource OS pre-check", func() {
+	ctx := context.Background()
+	BeforeEach(func() { reconcileGatewayConfig(ctx) })
+
+	It("records the OS config, backs off after failures and pins the host key", func() {
+		Expect(client.IgnoreAlreadyExists(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "web02-ssh", Namespace: "default"},
+			Data:       map[string][]byte{"username": []byte("admin"), "password": []byte("pw")},
+		}))).To(Succeed())
+		src := &migrationv1alpha1.P2VSource{
+			ObjectMeta: metav1.ObjectMeta{Name: "web02", Namespace: "default"},
+			Spec: migrationv1alpha1.P2VSourceSpec{OSAccess: &migrationv1alpha1.OSAccess{
+				Type: migrationv1alpha1.OSAccessSSH, Address: "web02.example.com",
+				CredentialsSecretRef: corev1.LocalObjectReference{Name: "web02-ssh"},
+			}},
+		}
+		Expect(k8sClient.Create(ctx, src)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, src) })
+
+		var calls []string
+		fail := true
+		now := time.Now()
+		r := &P2VSourceReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), APIReader: k8sClient,
+			Now: func() time.Time { return now },
+			PreCheck: func(_ context.Context, a migrationv1alpha1.OSAccess, c precheck.Credentials, _ []byte, known string) (*migrationv1alpha1.OSConfig, error) {
+				calls = append(calls, c.Username+"@"+a.Address+" known="+known)
+				if fail {
+					return nil, fmt.Errorf("connection refused")
+				}
+				return &migrationv1alpha1.OSConfig{HostKeyFingerprint: "SHA256:abc",
+					OS:   migrationv1alpha1.OSInfo{Hostname: "web02", Distribution: "rhel", Version: "9.4"},
+					NICs: []migrationv1alpha1.NIC{{MAC: "3c:ec:ef:00:00:01", Name: "eno1", IPAddresses: []string{"10.0.0.5/24"}}}}, nil
+			}}
+		run := func() {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(src)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(src), src)).To(Succeed())
+		}
+
+		run()
+		Expect(apimeta.FindStatusCondition(src.Status.Conditions, ConditionOSReachable).Reason).To(Equal("PreCheckFailed"))
+		By("not retrying immediately")
+		run()
+		Expect(calls).To(HaveLen(1))
+
+		By("succeeding after the back-off")
+		fail = false
+		now = now.Add(3 * time.Minute)
+		run()
+		Expect(calls).To(HaveLen(2))
+		Expect(calls[1]).To(Equal("admin@web02.example.com known="))
+		Expect(apimeta.IsStatusConditionTrue(src.Status.Conditions, ConditionOSReachable)).To(BeTrue())
+		Expect(src.Status.OSConfig.NICs[0].Name).To(Equal("eno1"))
+
+		By("not re-running once it succeeded")
+		run()
+		Expect(calls).To(HaveLen(2))
+
+		By("re-running on request with the pinned host key")
+		src.Annotations = map[string]string{AnnotationPreCheck: now.Add(time.Minute).UTC().Format(time.RFC3339)}
+		Expect(k8sClient.Update(ctx, src)).To(Succeed())
+		now = now.Add(2 * time.Minute)
+		run()
+		Expect(calls).To(HaveLen(3))
+		Expect(calls[2]).To(HaveSuffix("known=SHA256:abc"))
+	})
+})

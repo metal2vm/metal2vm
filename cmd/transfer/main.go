@@ -43,6 +43,7 @@ import (
 func runConvert(args []string) int {
 	fs := flag.NewFlagSet("convert", flag.ExitOnError)
 	v2v := fs.String("virt-v2v-in-place", "/usr/libexec/virt-v2v-in-place", "virt-v2v-in-place binary")
+	guestfish := fs.String("guestfish", "guestfish", "guestfish binary (network config fix-up)")
 	workDir := fs.String("work-dir", "/var/tmp", "writable directory for domain and inspection XML")
 	termLog := fs.String("termination-log", "/dev/termination-log", "where the result is written")
 	_ = fs.Parse(args)
@@ -56,7 +57,7 @@ func runConvert(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log.Info("converting guest", "name", plan.Name, "disks", len(plan.Disks), "firmware", plan.Firmware)
-	res, err := convert.Run(ctx, plan, *v2v, *workDir, os.Stdout)
+	res, err := convert.Run(ctx, plan, *v2v, *guestfish, *workDir, os.Stdout)
 	if err != nil {
 		res.Error = err.Error()
 		convert.WriteTermination(*termLog, res)

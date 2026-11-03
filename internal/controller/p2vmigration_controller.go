@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,7 +30,9 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -87,6 +91,7 @@ type P2VMigrationReconciler struct {
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=storageprofiles,verbs=get;list;watch
 // +kubebuilder:rbac:groups=config.openshift.io,resources=ingresses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=k8s.cni.cncf.io,resources=network-attachment-definitions,verbs=get;list;watch
 
 func (r *P2VMigrationReconciler) now() time.Time {
 	if r.Now != nil {
@@ -282,11 +287,9 @@ var activePhases = map[migrationv1alpha1.MigrationPhase]bool{
 // admin sees all problems at once.
 func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1alpha1.P2VMigration) (
 	*migrationv1alpha1.P2VSource, []migrationv1alpha1.PreflightResult, error) {
-	var results []migrationv1alpha1.PreflightResult
-	add := func(name string, ok bool, sev migrationv1alpha1.PreflightSeverity, msg string) {
-		results = append(results, migrationv1alpha1.PreflightResult{Name: name, Passed: ok, Severity: sev, Message: msg})
-	}
-	B, W := migrationv1alpha1.SeverityBlocker, migrationv1alpha1.SeverityWarning
+	results := make(checks, 0, 20)
+	add := results.add
+	B := migrationv1alpha1.SeverityBlocker
 
 	src, err := r.source(ctx, m)
 	if err != nil {
@@ -322,6 +325,45 @@ func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1al
 	add("InventoryAvailable", inv != nil, B,
 		"the source has no inventory yet: boot it from its ISO once, or run the OS pre-check")
 
+	results = append(results, diskChecks(m, inv)...)
+	results = append(results, nicChecks(m, src, inv)...)
+	ipam, err := r.keepIPOnIPAMNetwork(ctx, m)
+	if err != nil {
+		return nil, nil, err
+	}
+	add("KeepIPWithoutIPAM", ipam == "", migrationv1alpha1.SeverityWarning, "network "+ipam+" assigns IP addresses itself "+
+		"(IPAM/port security): a kept static IP may be blocked there; use a bridged or localnet network without IPAM to keep IPs")
+
+	missingSC := ""
+	for _, d := range m.Spec.Disks {
+		if d.Action != migrationv1alpha1.DiskCopy {
+			continue
+		}
+		sc, err := r.storageClassFor(ctx, d, &cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		if sc == "" {
+			missingSC = d.SourceDiskID
+		}
+	}
+	add("StorageClassAvailable", missingSC == "", B,
+		"no usable StorageClass for disk "+missingSC+": set storageClassName, P2VConfig defaultStorageClassName, or a cluster default")
+	return src, results, nil
+}
+
+// checks collects pre-flight results.
+type checks []migrationv1alpha1.PreflightResult
+
+func (c *checks) add(name string, ok bool, sev migrationv1alpha1.PreflightSeverity, msg string) {
+	*c = append(*c, migrationv1alpha1.PreflightResult{Name: name, Passed: ok, Severity: sev, Message: msg})
+}
+
+// diskChecks validates the per-disk plan against the inventory.
+func diskChecks(m *migrationv1alpha1.P2VMigration, inv *migrationv1alpha1.Inventory) checks {
+	var results checks
+	add := results.add
+	B, W := migrationv1alpha1.SeverityBlocker, migrationv1alpha1.SeverityWarning
 	copies, unknown, encrypted, attach := 0, "", "", ""
 	for _, d := range m.Spec.Disks {
 		disk := findDisk(inv, d.SourceDiskID)
@@ -346,22 +388,79 @@ func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1al
 	add("NoEncryptedDisks", encrypted == "", W,
 		"disk "+encrypted+" holds an encrypted volume; conversion will need it unlocked or its key")
 
-	missingSC := ""
-	for _, d := range m.Spec.Disks {
-		if d.Action != migrationv1alpha1.DiskCopy {
-			continue
+	return results
+}
+
+// nicChecks validates the per-NIC plan against the inventory and OS pre-check.
+func nicChecks(m *migrationv1alpha1.P2VMigration, src *migrationv1alpha1.P2VSource,
+	inv *migrationv1alpha1.Inventory) checks {
+	var results checks
+	add := results.add
+	B, W := migrationv1alpha1.SeverityBlocker, migrationv1alpha1.SeverityWarning
+	unknownNIC, keepIPNoPrecheck := "", ""
+	for _, n := range m.Spec.NICs {
+		known := false
+		if inv != nil {
+			for _, nic := range inv.NICs {
+				known = known || strings.EqualFold(nic.MAC, n.SourceMAC)
+			}
 		}
-		sc, err := r.storageClassFor(ctx, d, &cfg)
-		if err != nil {
-			return nil, nil, err
+		if src != nil && findOSNIC(src.Status.OSConfig, n.SourceMAC) != nil {
+			known = true
 		}
-		if sc == "" {
-			missingSC = d.SourceDiskID
+		if inv != nil && !known {
+			unknownNIC = n.SourceMAC
+		}
+		if n.KeepIP && (src == nil || findOSNIC(src.Status.OSConfig, n.SourceMAC) == nil) {
+			keepIPNoPrecheck = n.SourceMAC
 		}
 	}
-	add("StorageClassAvailable", missingSC == "", B,
-		"no usable StorageClass for disk "+missingSC+": set storageClassName, P2VConfig defaultStorageClassName, or a cluster default")
-	return src, results, nil
+	add("NICsKnown", unknownNIC == "", B, "NIC "+unknownNIC+" is not in the source inventory")
+	add("KeepIPHasOSConfig", keepIPNoPrecheck == "", W, "NIC "+keepIPNoPrecheck+": without the OS pre-check (spec.osAccess), "+
+		"static IPs are kept on Linux (from the guest's own files) but not on Windows")
+	return results
+}
+
+// keepIPOnIPAMNetwork returns the first network a keepIP NIC is mapped to
+// that does its own IP address management, or "".
+func (r *P2VMigrationReconciler) keepIPOnIPAMNetwork(ctx context.Context, m *migrationv1alpha1.P2VMigration) (string, error) {
+	for _, n := range m.Spec.NICs {
+		if !n.KeepIP || n.Type != migrationv1alpha1.NetworkMultus {
+			continue
+		}
+		ns, name := m.Namespace, n.NetworkName
+		if before, after, ok := strings.Cut(n.NetworkName, "/"); ok {
+			ns, name = before, after
+		}
+		nad := &unstructured.Unstructured{}
+		nad.SetGroupVersionKind(schema.GroupVersionKind{Group: "k8s.cni.cncf.io", Version: "v1", Kind: "NetworkAttachmentDefinition"})
+		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, nad); err != nil {
+			if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+				continue
+			}
+			return "", err
+		}
+		cfg, _, _ := unstructured.NestedString(nad.Object, "spec", "config")
+		if networkAssignsIPs(cfg) {
+			return n.NetworkName, nil
+		}
+	}
+	return "", nil
+}
+
+// networkAssignsIPs reports whether a CNI config allocates addresses: OVN-K
+// "subnets", or an "ipam" section with a type.
+func networkAssignsIPs(config string) bool {
+	var c struct {
+		Subnets string `json:"subnets"`
+		IPAM    struct {
+			Type string `json:"type"`
+		} `json:"ipam"`
+	}
+	if json.Unmarshal([]byte(config), &c) != nil {
+		return false
+	}
+	return c.Subnets != "" || c.IPAM.Type != ""
 }
 
 // storageClassFor resolves a disk's StorageClass: plan, then P2VConfig, then

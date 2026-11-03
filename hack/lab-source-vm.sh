@@ -10,6 +10,7 @@
 # Usage: hack/lab-source-vm.sh create <name> [rhel9|win2k22]
 #        hack/lab-source-vm.sh delete <name>
 #        hack/lab-source-vm.sh boot-disk <name>   # boot the server's own OS again (rollback)
+#        hack/lab-source-vm.sh boot-live <name>   # reboot into the metal2vm live ISO
 # Namespace: $NS (default metal2vm-test). Credentials: Secret <name>-credentials.
 set -euo pipefail
 
@@ -30,19 +31,21 @@ delete)
   kubectl -n "$NS" delete secret "$NAME-credentials" --ignore-not-found
   kubectl -n "$NS" delete configmap "$NAME-sysprep" --ignore-not-found
   exit 0 ;;
-boot-disk)
-  kubectl -n "$NS" get vm "$NAME" -o json | python3 -c '
-import sys, json
+boot-disk|boot-live)
+  first=root; [ "$ACTION" = boot-live ] && first=live
+  kubectl -n "$NS" get vm "$NAME" -o json | FIRST="$first" python3 -c '
+import sys, json, os
 vm = json.load(sys.stdin)
 ops = []
+first = os.environ["FIRST"]
 for i, d in enumerate(vm["spec"]["template"]["spec"]["domain"]["devices"]["disks"]):
-    order = 2 if d["name"] == "live" else (1 if d["name"] == "root" else None)
+    order = 1 if d["name"] == first else (2 if d["name"] in ("live", "root") else None)
     if order: ops.append({"op": "replace", "path": f"/spec/template/spec/domain/devices/disks/{i}/bootOrder", "value": order})
 print(json.dumps(ops))' > /tmp/m2v-bootdisk-$NAME.json
   vm_patch "$(cat /tmp/m2v-bootdisk-$NAME.json)"
   virtctl_bin="$(command -v virtctl || echo bin/virtctl)"
   "$virtctl_bin" -n "$NS" start "$NAME" 2>/dev/null || "$virtctl_bin" -n "$NS" restart "$NAME"
-  echo ">> $NAME boots from its own disk"
+  echo ">> $NAME boots from its $first disk"
   exit 0 ;;
 create) ;;
 *) echo "unknown action $ACTION" >&2; exit 2 ;;

@@ -23,6 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/metal2vm/metal2vm/internal/netfix"
 )
 
 func TestDomainXML(t *testing.T) {
@@ -88,7 +90,7 @@ func TestRunReportsLastError(t *testing.T) {
 	fake := filepath.Join(dir, "v2v")
 	_ = os.WriteFile(fake, []byte("#!/bin/sh\necho '[ 1.0] Opening the source'\necho 'virt-v2v-in-place: error: inspection could not detect the source guest' >&2\nexit 1\n"), 0o755)
 	var log strings.Builder
-	_, err := Run(context.Background(), Plan{Name: "x", Disks: []Disk{{Path: "/dev/a"}}}, fake, dir, &log)
+	_, err := Run(context.Background(), Plan{Name: "x", Disks: []Disk{{Path: "/dev/a"}}}, fake, "guestfish", dir, &log)
 	if err == nil || !strings.Contains(err.Error(), "could not detect the source guest") {
 		t.Fatalf("err %v", err)
 	}
@@ -103,11 +105,80 @@ func TestRunSuccess(t *testing.T) {
 	fake := filepath.Join(dir, "v2v")
 	// Copy the fixture to the -O path (5th argument), like virt-v2v does.
 	_ = os.WriteFile(fake, []byte("#!/bin/sh\ncp "+fixture+" \"$5\"\n"), 0o755)
-	r, err := Run(context.Background(), Plan{Name: "x", Disks: []Disk{{Path: "/dev/a"}}}, fake, dir, &strings.Builder{})
+	r, err := Run(context.Background(), Plan{Name: "x", Disks: []Disk{{Path: "/dev/a"}}}, fake, "guestfish", dir, &strings.Builder{})
 	if err != nil || r.OS.OSInfo != "rhel9.8" {
 		t.Fatalf("%+v %v", r, err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "domain.xml")); !strings.Contains(string(b), "/dev/a") {
 		t.Fatal("domain.xml not written")
+	}
+}
+
+// fakeGuestfish serves fixture files to tar-out/download and records the
+// write-pass commands, so FixNetwork can be tested without libguestfs.
+func fakeGuestfish(t *testing.T, fixtures map[string]string) (bin, log string) {
+	t.Helper()
+	dir := t.TempDir()
+	root := filepath.Join(dir, "guest")
+	for p, c := range fixtures {
+		full := filepath.Join(root, p)
+		_ = os.MkdirAll(filepath.Dir(full), 0o755)
+		_ = os.WriteFile(full, []byte(c), 0o644)
+	}
+	log = filepath.Join(dir, "commands.log")
+	bin = filepath.Join(dir, "guestfish")
+	script := `#!/bin/sh
+ROOT=` + root + `
+while read -r cmd a b; do
+  echo "$cmd $a $b" >> ` + log + `
+  case "$cmd" in
+    -tar-out) [ -d "$ROOT$a" ] && tar -C "$ROOT$a" -cf "$b" . ;;
+    -download) [ -f "$ROOT$a" ] && cp "$ROOT$a" "$b" ;;
+    upload) mkdir -p "$(dirname "$ROOT$b")"; cp "$a" "$ROOT$b" ;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin, log
+}
+
+func TestFixNetwork(t *testing.T) {
+	gf, log := fakeGuestfish(t, map[string]string{
+		"/etc/sysconfig/network-scripts/ifcfg-eno1": "DEVICE=eno1\nHWADDR=3c:ec:ef:12:34:56\nBOOTPROTO=none\nIPADDR=10.1.2.3\nPREFIX=24\n",
+	})
+	work := t.TempDir()
+	p := Plan{Name: "x", Disks: []Disk{{Path: "/dev/a"}}, Network: netfix.Plan{NICs: []netfix.NIC{
+		{SourceMAC: "3c:ec:ef:12:34:56", TargetMAC: "02:00:00:00:00:01", DHCP: true},
+	}}}
+	notes, err := FixNetwork(context.Background(), p, gf, work, &strings.Builder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) == 0 {
+		t.Error("expected notes")
+	}
+	guest := filepath.Join(filepath.Dir(gf), "guest")
+	b, _ := os.ReadFile(filepath.Join(guest, "etc/sysconfig/network-scripts/ifcfg-eno1"))
+	if !strings.Contains(string(b), "BOOTPROTO=dhcp") || !strings.Contains(string(b), "02:00:00:00:00:01") {
+		t.Fatalf("ifcfg after fix:\n%s", b)
+	}
+	link, _ := os.ReadFile(filepath.Join(guest, "etc/systemd/network/10-metal2vm-eno1.link"))
+	if !strings.Contains(string(link), "Name=eno1") {
+		t.Fatalf("link file:\n%s", link)
+	}
+	cmds, _ := os.ReadFile(log)
+	if !strings.Contains(string(cmds), "chmod 0644 /etc/systemd/network/10-metal2vm-eno1.link") ||
+		strings.Contains(string(cmds), "chmod 0644 /etc/sysconfig") {
+		t.Fatalf("new files get 0644, existing keep their mode:\n%s", cmds)
+	}
+}
+
+func TestFixNetworkNoNICs(t *testing.T) {
+	notes, err := FixNetwork(context.Background(), Plan{}, "/nonexistent", t.TempDir(), &strings.Builder{})
+	if err != nil || notes != nil {
+		t.Fatalf("%v %v", notes, err)
 	}
 }

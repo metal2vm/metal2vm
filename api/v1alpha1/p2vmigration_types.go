@@ -57,9 +57,10 @@ type P2VMigrationSpec struct {
 	// +optional
 	BootMethod BootMethod `json:"bootMethod,omitempty"`
 
-	// targetVM describes the VirtualMachine to create.
-	// +required
-	TargetVM TargetVM `json:"targetVM"`
+	// targetVM describes the VirtualMachine to create. Everything defaults
+	// from the source inventory.
+	// +optional
+	TargetVM TargetVM `json:"targetVM,omitzero"`
 
 	// disks maps each source disk to an action. Disks not listed are skipped.
 	// +listType=map
@@ -328,6 +329,9 @@ type GuestInfo struct {
 	// firmware the converted guest needs to boot.
 	// +optional
 	Firmware FirmwareType `json:"firmware,omitempty"`
+	// networkNotes explains how the guest's network config was adapted.
+	// +optional
+	NetworkNotes []string `json:"networkNotes,omitempty"`
 }
 
 type AgentStatus struct {
