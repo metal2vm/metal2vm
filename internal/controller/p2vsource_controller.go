@@ -59,9 +59,12 @@ type P2VSourceReconciler struct {
 	APIReader client.Reader
 	// PreCheck runs the OS pre-check; defaults to SSH/WinRM.
 	PreCheck PreCheckFunc
-	Now      func() time.Time
+	// BMC opens BMC sessions; defaults to Redfish.
+	BMC BMCConnector
+	Now func() time.Time
 
 	lastAttempt sync.Map // namespace/name -> time.Time
+	lastBMC     sync.Map // namespace/name -> time.Time
 }
 
 // PreCheckFunc reads the running OS's configuration.
@@ -82,6 +85,8 @@ func DefaultPreCheck(ctx context.Context, a migrationv1alpha1.OSAccess, creds pr
 const (
 	// ConditionOSReachable is set on P2VSource by the OS pre-check.
 	ConditionOSReachable = "OSReachable"
+	// ConditionBMCReachable is set on P2VSource by the BMC check.
+	ConditionBMCReachable = "BMCReachable"
 	// AnnotationPreCheck re-runs the OS pre-check when set to a newer RFC3339 time.
 	AnnotationPreCheck = "metal2vm.io/precheck-requested"
 	preCheckRetry      = 2 * time.Minute
@@ -134,7 +139,7 @@ func (r *P2VSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if cfg.Spec.AgentTokenTTL != nil && cfg.Spec.AgentTokenTTL.Duration > 0 {
 			ttl = cfg.Spec.AgentTokenTTL.Duration
 		}
-		expiresAt, err := r.ensureBootSecret(ctx, &src, cfg.Status.GatewayURL, ttl)
+		expiresAt, err := r.ensureBootSecret(ctx, &src, cfg.Status.GatewayURL, cfg.Status.BootMediaHTTPURL, ttl)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("boot secret: %w", err)
 		}
@@ -153,6 +158,9 @@ func (r *P2VSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if wait := r.reconcilePreCheck(ctx, &src); wait > 0 {
 			requeue = min(requeue, wait)
 		}
+	}
+	if src.Spec.BMC != nil {
+		requeue = min(requeue, r.reconcileBMC(ctx, &src))
 	}
 
 	// The gateway sets connected=true on every heartbeat; time it out here.
@@ -228,11 +236,55 @@ func (r *P2VSourceReconciler) reconcilePreCheck(ctx context.Context, src *migrat
 	return 0
 }
 
+// bmcRecheck is how often a BMC's reachability and power state are refreshed.
+const bmcRecheck = 10 * time.Minute
+
+// reconcileBMC checks the BMC when the spec changed or the last check is old.
+func (r *P2VSourceReconciler) reconcileBMC(ctx context.Context, src *migrationv1alpha1.P2VSource) time.Duration {
+	key := src.Namespace + "/" + src.Name
+	cond := apimeta.FindStatusCondition(src.Status.Conditions, ConditionBMCReachable)
+	if last, ok := r.lastBMC.Load(key); ok && cond != nil && cond.ObservedGeneration == src.Generation {
+		if wait := bmcRecheck - r.now().Sub(last.(time.Time)); wait > 0 {
+			return wait
+		}
+	}
+	r.lastBMC.Store(key, r.now())
+	set := func(status metav1.ConditionStatus, reason, msg string) {
+		apimeta.SetStatusCondition(&src.Status.Conditions, metav1.Condition{
+			Type: ConditionBMCReachable, Status: status, Reason: reason, Message: msg, ObservedGeneration: src.Generation,
+		})
+	}
+	bctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	c, err := connectBMC(bctx, r.APIReader, r.BMC, src)
+	if err != nil {
+		set(metav1.ConditionFalse, "Unreachable", err.Error())
+		return preCheckRetry
+	}
+	defer c.Close()
+	info, err := c.Info()
+	if err != nil {
+		set(metav1.ConditionFalse, "Unreachable", err.Error())
+		return preCheckRetry
+	}
+	src.Status.BMC = &migrationv1alpha1.BMCStatus{
+		CheckedAt: metav1.NewTime(r.now()), Manufacturer: info.Manufacturer, Model: info.Model,
+		SerialNumber: info.SerialNumber, PowerState: info.PowerState, VirtualMedia: info.VirtualMedia,
+	}
+	if !info.VirtualMedia {
+		set(metav1.ConditionFalse, "NoVirtualMedia", "the BMC answers but offers no CD/DVD virtual media; boot the ISO another way")
+		return bmcRecheck
+	}
+	set(metav1.ConditionTrue, "Reachable", fmt.Sprintf("%s %s (serial %s), power %s",
+		info.Manufacturer, info.Model, info.SerialNumber, info.PowerState))
+	return bmcRecheck
+}
+
 // ensureBootSecret creates or rotates the source's boot credentials and keeps
 // the ISO URL current. Credentials rotate only after they expire; the gateway
 // extends them while an agent is connected.
 func (r *P2VSourceReconciler) ensureBootSecret(ctx context.Context, src *migrationv1alpha1.P2VSource,
-	gatewayURL string, ttl time.Duration) (time.Time, error) {
+	gatewayURL, httpURL string, ttl time.Duration) (time.Time, error) {
 	sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: BootSecretName(src.Name), Namespace: src.Namespace}}
 	var expiresAt time.Time
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
@@ -249,6 +301,13 @@ func (r *P2VSourceReconciler) ensureBootSecret(ctx context.Context, src *migrati
 		expiresAt = exp
 		bootKey, token := string(sec.Data[tokens.KeyBootKey]), string(sec.Data[tokens.KeyToken])
 		sec.Data[tokens.KeyISOURL] = []byte(gatewayURL + "/boot/v1/iso/" + bootKey + ".iso")
+		sec.Data[tokens.KeyIPXEURL] = []byte(gatewayURL + "/boot/v1/pxe/" + bootKey + "/boot.ipxe")
+		delete(sec.Data, tokens.KeyISOHTTPURL)
+		delete(sec.Data, tokens.KeyIPXEHTTPURL)
+		if httpURL != "" {
+			sec.Data[tokens.KeyISOHTTPURL] = []byte(httpURL + "/boot/v1/iso/" + bootKey + ".iso")
+			sec.Data[tokens.KeyIPXEHTTPURL] = []byte(httpURL + "/boot/v1/pxe/" + bootKey + "/boot.ipxe")
+		}
 		sec.Labels = labelled(map[string]string{
 			tokens.LabelSource:      src.Name,
 			tokens.LabelBootKeyHash: tokens.Hash(bootKey),

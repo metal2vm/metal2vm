@@ -60,8 +60,10 @@ spec:
                 properties:
                   bootMediaHTTP:
                     description: |-
-                      bootMediaHTTP also serves boot ISOs over plain HTTP for BMCs that
-                      cannot fetch virtual media over HTTPS.
+                      bootMediaHTTP also serves boot artifacts (ISO, PXE) over plain HTTP,
+                      for BMCs and iPXE that cannot use HTTPS. The boot token then crosses the
+                      network unencrypted: use it on trusted provisioning networks only. The
+                      agent API always stays on HTTPS.
                     type: boolean
                   exposure:
                     default: Route
@@ -97,6 +99,10 @@ spec:
           status:
             description: status defines the observed state of P2VConfig
             properties:
+              bootMediaHTTPURL:
+                description: bootMediaHTTPURL serves boot artifacts over plain HTTP
+                  (bootMediaHTTP).
+                type: string
               conditions:
                 description: 'conditions: Available, Degraded.'
                 items:

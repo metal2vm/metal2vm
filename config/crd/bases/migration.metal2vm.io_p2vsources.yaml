@@ -85,6 +85,15 @@ spec:
                     description: insecureSkipVerify disables TLS verification of the
                       BMC certificate.
                     type: boolean
+                  mediaProtocol:
+                    default: HTTPS
+                    description: |-
+                      mediaProtocol is how the BMC fetches the live ISO. HTTP needs
+                      P2VConfig spec.gateway.bootMediaHTTP.
+                    enum:
+                    - HTTPS
+                    - HTTP
+                    type: string
                   systemID:
                     description: systemID selects the Redfish ComputerSystem. Empty
                       means the only system.
@@ -165,6 +174,28 @@ spec:
                     type: string
                   version:
                     type: string
+                type: object
+              bmc:
+                description: bmc is what the last BMC check found.
+                properties:
+                  checkedAt:
+                    format: date-time
+                    type: string
+                  manufacturer:
+                    type: string
+                  model:
+                    type: string
+                  powerState:
+                    description: powerState is On or Off.
+                    type: string
+                  serialNumber:
+                    type: string
+                  virtualMedia:
+                    description: virtualMedia is true when the BMC offers CD/DVD virtual
+                      media.
+                    type: boolean
+                required:
+                - checkedAt
                 type: object
               bootMedia:
                 description: bootMedia describes the live environment boot media for

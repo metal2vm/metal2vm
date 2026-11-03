@@ -351,3 +351,85 @@ func TestServeTools(t *testing.T) {
 		t.Fatalf("tools body %q", body)
 	}
 }
+
+func TestPXE(t *testing.T) {
+	f := newFixture(t, 24*time.Hour, 24*time.Hour)
+	ctx := context.Background()
+	pxe := t.TempDir()
+	for _, n := range []string{"kernel", "initramfs.img", "rootfs.img"} {
+		_ = os.WriteFile(filepath.Join(pxe, n), []byte(n+"-bytes"), 0o644)
+	}
+	f.srv.PXEDir = pxe
+	get := func(path string) (int, string) {
+		resp, err := http.Get(f.http.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+
+	code, body := get("/boot/v1/pxe/" + bootKey + "/boot.ipxe")
+	if code != 200 || !strings.HasPrefix(body, "#!ipxe") ||
+		!strings.Contains(body, f.http.URL+"/boot/v1/pxe/"+bootKey+"/ignition.img") ||
+		!strings.Contains(body, "coreos.live.rootfs_url="+f.http.URL+"/boot/v1/pxe/rootfs.img") {
+		t.Fatalf("script %d:\n%s", code, body)
+	}
+	if code, _ := get("/boot/v1/pxe/wrong/boot.ipxe"); code != 404 {
+		t.Errorf("unknown key: %d", code)
+	}
+	code, body = get("/boot/v1/pxe/" + bootKey + "/ignition.img")
+	if code != 200 || !strings.HasPrefix(body, "070701") || !strings.Contains(body, "config.ign") ||
+		!strings.Contains(body, gatewayURL+boot.AgentDownloadPath) {
+		t.Fatalf("ignition initrd %d", code)
+	}
+	if code, body := get("/boot/v1/pxe/kernel"); code != 200 || body != "kernel-bytes" {
+		t.Errorf("kernel %d %q", code, body)
+	}
+
+	// by-mac: exit unless a PXE migration is booting.
+	var src v1alpha1.P2VSource
+	_ = f.kube.Get(ctx, types.NamespacedName{Namespace: srcNS, Name: srcName}, &src)
+	src.Spec.PXE = &v1alpha1.PXEAccess{BootMACAddress: "3C:EC:EF:12:34:56"}
+	if err := f.kube.Update(ctx, &src); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := get("/boot/v1/pxe-mac/3c-ec-ef-12-34-56"); body != IPXEExit {
+		t.Fatalf("no migration: %q", body)
+	}
+	mig := &v1alpha1.P2VMigration{
+		ObjectMeta: metav1.ObjectMeta{Name: "pxe-mig", Namespace: srcNS},
+		Spec: v1alpha1.P2VMigrationSpec{SourceRef: corev1.LocalObjectReference{Name: srcName}, BootMethod: v1alpha1.BootPXE,
+			Disks: []v1alpha1.DiskMapping{{SourceDiskID: "d0", Action: v1alpha1.DiskCopy}}},
+	}
+	_ = f.kube.Create(ctx, mig)
+	mig.Status.Phase = v1alpha1.PhaseBooting
+	_ = f.kube.Status().Update(ctx, mig)
+	if _, body := get("/boot/v1/pxe-mac/3c:ec:ef:12:34:56"); !strings.Contains(body, "/boot/v1/pxe/"+bootKey+"/ignition.img") {
+		t.Fatalf("booting migration: %q", body)
+	}
+	mig.Status.Phase = v1alpha1.PhaseCopying
+	_ = f.kube.Status().Update(ctx, mig)
+	if _, body := get("/boot/v1/pxe-mac/3c:ec:ef:12:34:56"); body != IPXEExit {
+		t.Fatal("after the boot window the script must fall through to the local disk")
+	}
+}
+
+func TestBootHandlerExcludesAgentAPI(t *testing.T) {
+	f := newFixture(t, time.Hour, time.Hour)
+	h := httptest.NewServer(f.srv.BootHandler())
+	defer h.Close()
+	for _, path := range []string{boot.AgentDownloadPath, protocol.ToolsDownloadPath} {
+		resp, _ := http.Get(h.URL + path)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s served on the plain HTTP listener: %d", path, resp.StatusCode)
+		}
+	}
+	resp, _ := http.Post(h.URL+protocol.HeartbeatPath, "application/json", strings.NewReader("{}"))
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("agent API on the plain HTTP listener: %d", resp.StatusCode)
+	}
+}

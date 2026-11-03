@@ -79,7 +79,11 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
-	var gatewayAddr, isoPath, agentPath, toolsPath string
+	var gatewayAddr, isoPath, agentPath, toolsPath, pxeDir, bootHTTPAddr string
+	flag.StringVar(&pxeDir, "pxe-dir", "/var/lib/metal2vm/boot/pxe",
+		"Directory with the live kernel, initramfs.img and rootfs.img for PXE boot.")
+	flag.StringVar(&bootHTTPAddr, "boot-http-bind-address", fmt.Sprintf(":%d", gateway.HTTPPort),
+		"Plain HTTP listener for boot artifacts only (ISO, PXE); empty disables it.")
 	flag.StringVar(&toolsPath, "live-tools", "/var/lib/metal2vm/boot/live-tools.tar.gz",
 		"Path of the live-tools root filesystem (nbdkit) served to live environments.")
 	flag.StringVar(&gatewayAddr, "gateway-bind-address", fmt.Sprintf(":%d", gateway.Port),
@@ -222,6 +226,7 @@ func main() {
 		Client:    mgr.GetClient(),
 		Scheme:    mgr.GetScheme(),
 		APIReader: mgr.GetAPIReader(),
+		BMC:       controller.DefaultBMCConnector,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "p2vsource")
 		os.Exit(1)
@@ -242,6 +247,8 @@ func main() {
 		Namespace:     operatorNamespace,
 		TransferImage: transferImage,
 		OpenShift:     openShift,
+		APIReader:     mgr.GetAPIReader(),
+		BMC:           controller.DefaultBMCConnector,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "p2vmigration")
 		os.Exit(1)
@@ -263,6 +270,8 @@ func main() {
 		ISOPath:   isoPath,
 		AgentPath: agentPath,
 		ToolsPath: toolsPath,
+		PXEDir:    pxeDir,
+		HTTPAddr:  bootHTTPAddr,
 		Log:       ctrl.Log.WithName("gateway"),
 	}); err != nil {
 		setupLog.Error(err, "Failed to add gateway")

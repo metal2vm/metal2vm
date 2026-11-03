@@ -44,6 +44,7 @@ import (
 	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
+	"github.com/metal2vm/metal2vm/internal/tokens"
 	"github.com/metal2vm/metal2vm/internal/vmbuilder"
 )
 
@@ -76,6 +77,10 @@ type P2VMigrationReconciler struct {
 	TransferImage string
 	// OpenShift enables the conversion SCC and its seccomp profile.
 	OpenShift bool
+	// APIReader reads BMC credentials Secrets, which are not cached.
+	APIReader client.Reader
+	// BMC opens BMC sessions; defaults to Redfish.
+	BMC BMCConnector
 	// HTTP polls transfer pods; nil uses a client with a short timeout.
 	HTTP *http.Client
 	Now  func() time.Time
@@ -156,18 +161,7 @@ func (r *P2VMigrationReconciler) step(ctx context.Context, m *migrationv1alpha1.
 		return requeueSoon, nil
 
 	case migrationv1alpha1.PhaseBooting:
-		src, err := r.source(ctx, m)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if src == nil || !agentConnected(src) {
-			m.Status.Message = bootMessage(m, src)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-		setCondition(m, ConditionAgentConnected, metav1.ConditionTrue, "Connected", "the live agent is connected")
-		m.Status.Agent = src.Status.Agent.DeepCopy()
-		r.setPhase(m, migrationv1alpha1.PhaseConnected, "live agent connected")
-		return requeueSoon, nil
+		return r.reconcileBooting(ctx, m)
 
 	case migrationv1alpha1.PhaseConnected:
 		src, err := r.source(ctx, m)
@@ -225,7 +219,111 @@ func setCondition(m *migrationv1alpha1.P2VMigration, t string, s metav1.Conditio
 	})
 }
 
+// reconcileBooting starts the boot (BMC) when needed and waits for the agent.
+func (r *P2VMigrationReconciler) reconcileBooting(ctx context.Context, m *migrationv1alpha1.P2VMigration) (ctrl.Result, error) {
+	src, err := r.source(ctx, m)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if src != nil && !agentConnected(src) && (m.Spec.BootMethod == migrationv1alpha1.BootRedfish ||
+		(m.Spec.BootMethod == migrationv1alpha1.BootPXE && src.Spec.BMC != nil)) {
+		if err := r.bootViaBMC(ctx, m, src); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	if src == nil || !agentConnected(src) {
+		m.Status.Message = bootMessage(m, src)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+	setCondition(m, ConditionAgentConnected, metav1.ConditionTrue, "Connected", "the live agent is connected")
+	m.Status.Agent = src.Status.Agent.DeepCopy()
+	r.setPhase(m, migrationv1alpha1.PhaseConnected, "live agent connected")
+	return requeueSoon, nil
+}
+
+// bootMethodReady checks that the planned boot method can work for src.
+func bootMethodReady(m *migrationv1alpha1.P2VMigration, src *migrationv1alpha1.P2VSource) (bool, string) {
+	switch m.Spec.BootMethod {
+	case "", migrationv1alpha1.BootManual:
+		return true, ""
+	case migrationv1alpha1.BootRedfish:
+		if src == nil || src.Spec.BMC == nil {
+			return false, "bootMethod redfish needs spec.bmc on the P2VSource"
+		}
+		if !apimeta.IsStatusConditionTrue(src.Status.Conditions, ConditionBMCReachable) {
+			msg := "the BMC has not been checked yet"
+			if c := apimeta.FindStatusCondition(src.Status.Conditions, ConditionBMCReachable); c != nil {
+				msg = c.Message
+			}
+			return false, "the source's BMC is not usable: " + msg
+		}
+		return true, ""
+	case migrationv1alpha1.BootPXE:
+		if src == nil || src.Spec.PXE == nil {
+			return false, "bootMethod pxe needs spec.pxe.bootMACAddress on the P2VSource"
+		}
+		return true, ""
+	default:
+		return false, fmt.Sprintf("unknown bootMethod %s", m.Spec.BootMethod)
+	}
+}
+
+// ConditionBootMediaInserted records that the BMC was told to boot the live ISO.
+const ConditionBootMediaInserted = "BootMediaInserted"
+
+// bootViaBMC inserts the live ISO and power-cycles the server, once.
+func (r *P2VMigrationReconciler) bootViaBMC(ctx context.Context, m *migrationv1alpha1.P2VMigration, src *migrationv1alpha1.P2VSource) error {
+	if apimeta.IsStatusConditionTrue(m.Status.Conditions, ConditionBootMediaInserted) {
+		return nil
+	}
+	var sec corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: src.Namespace, Name: BootSecretName(src.Name)}, &sec); err != nil {
+		return fmt.Errorf("boot media: %w", err)
+	}
+	c, err := connectBMC(ctx, r.APIReader, r.BMC, src)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if m.Spec.BootMethod == migrationv1alpha1.BootPXE {
+		if err := c.BootFromNetwork(); err != nil {
+			return err
+		}
+		setCondition(m, ConditionBootMediaInserted, metav1.ConditionTrue, "BMC", "the BMC is network-booting the server (PXE)")
+		return nil
+	}
+	url := string(sec.Data[tokens.KeyISOURL])
+	if src.Spec.BMC.MediaProtocol == "HTTP" {
+		url = string(sec.Data[tokens.KeyISOHTTPURL])
+		if url == "" {
+			return fmt.Errorf("mediaProtocol HTTP needs P2VConfig spec.gateway.bootMediaHTTP")
+		}
+	}
+	// The cached migration may be stale: trust the BMC. If our ISO is already
+	// inserted, the boot is under way; do not power-cycle again.
+	if img, inserted, err := c.InsertedMedia(); err == nil && inserted && img == url {
+		setCondition(m, ConditionBootMediaInserted, metav1.ConditionTrue, "BMC",
+			"the BMC is booting the server from the metal2vm live ISO")
+		return nil
+	}
+	if err := c.BootFromISO(url); err != nil {
+		return err
+	}
+	setCondition(m, ConditionBootMediaInserted, metav1.ConditionTrue, "BMC",
+		"the BMC is booting the server from the metal2vm live ISO")
+	return nil
+}
+
 func bootMessage(m *migrationv1alpha1.P2VMigration, src *migrationv1alpha1.P2VSource) string {
+	switch {
+	case m.Spec.BootMethod == migrationv1alpha1.BootRedfish:
+		return fmt.Sprintf("waiting for the live agent: %s is booting the metal2vm ISO through its BMC", m.Spec.SourceRef.Name)
+	case m.Spec.BootMethod == migrationv1alpha1.BootPXE && src != nil && src.Spec.BMC != nil:
+		return fmt.Sprintf("waiting for the live agent: %s is network-booting (PXE) through its BMC", m.Spec.SourceRef.Name)
+	case m.Spec.BootMethod == migrationv1alpha1.BootPXE:
+		return fmt.Sprintf("waiting for the live agent: power on or reboot %s with network boot (PXE); "+
+			"iPXE URL in Secret %s (key ipxeURL / ipxeHTTPURL)", m.Spec.SourceRef.Name, BootSecretName(m.Spec.SourceRef.Name))
+	}
 	secret := BootSecretName(m.Spec.SourceRef.Name)
 	if src != nil && src.Status.BootMedia != nil {
 		secret = src.Status.BootMedia.SecretName
@@ -297,8 +395,8 @@ func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1al
 	}
 	add("SourceFound", src != nil, B, "P2VSource "+m.Spec.SourceRef.Name+" must exist in this namespace")
 	add("ModeSupported", m.Spec.Mode != migrationv1alpha1.ModeWarm, B, "warm migration is not available yet; use cold")
-	add("BootMethodSupported", m.Spec.BootMethod == "" || m.Spec.BootMethod == migrationv1alpha1.BootManual, B,
-		"only manual boot (USB/virtual media from the ISO) is available yet")
+	bootOK, bootMsg := bootMethodReady(m, src)
+	add("BootMethodSupported", bootOK, B, bootMsg)
 
 	var cfg migrationv1alpha1.P2VConfig
 	if err := r.Get(ctx, types.NamespacedName{Name: migrationv1alpha1.P2VConfigSingletonName}, &cfg); client.IgnoreNotFound(err) != nil {

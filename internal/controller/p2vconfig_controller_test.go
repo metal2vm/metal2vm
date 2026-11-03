@@ -117,3 +117,36 @@ var _ = Describe("P2VConfig Controller", func() {
 		Expect(EnsureDefaultConfig(ctx, k8sClient)).To(Succeed())
 	})
 })
+
+var _ = Describe("P2VConfig boot media over HTTP", func() {
+	ctx := context.Background()
+	It("exposes and removes the plain HTTP boot listener", func() {
+		cfg := reconcileGatewayConfig(ctx)
+		r := &P2VConfigReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Namespace: operatorNS}
+		cfg.Spec.Gateway.BootMediaHTTP = true
+		Expect(k8sClient.Update(ctx, cfg)).To(Succeed())
+		var route routev1.Route
+		// envtest has no router to assign a host; set it like the router would.
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: operatorNS, Name: gateway.BootHTTPRouteName}, &route)).To(Succeed())
+		Expect(route.Spec.TLS).To(BeNil())
+		route.Spec.Host = "metal2vm-boot.apps.example.com"
+		Expect(k8sClient.Update(ctx, &route)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cfg), cfg)).To(Succeed())
+		Expect(cfg.Status.BootMediaHTTPURL).To(Equal("http://metal2vm-boot.apps.example.com"))
+		Expect(cfg.Status.GatewayURL).To(HavePrefix("https://"))
+
+		cfg.Spec.Gateway.BootMediaHTTP = false
+		Expect(k8sClient.Update(ctx, cfg)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cfg), cfg)).To(Succeed())
+		Expect(cfg.Status.BootMediaHTTPURL).To(BeEmpty())
+		err = k8sClient.Get(ctx, types.NamespacedName{Namespace: operatorNS, Name: gateway.BootHTTPRouteName}, &route)
+		Expect(client.IgnoreNotFound(err)).To(Succeed())
+		Expect(err).To(HaveOccurred())
+	})
+})

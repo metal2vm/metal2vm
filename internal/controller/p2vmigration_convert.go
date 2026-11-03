@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -466,13 +467,15 @@ func (r *P2VMigrationReconciler) reconcileCutover(ctx context.Context, m *migrat
 	}
 
 	if ptr.Deref(m.Spec.AutoShutdownSource, true) {
-		if sourceStillUp(src, r.now()) {
-			setCondition(m, ConditionSourcePoweredOff, metav1.ConditionFalse, "Requested",
-				"asked the live agent to power off the source")
+		off, how, err := r.sourceOff(ctx, m, src)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !off {
 			m.Status.Message = "waiting for the source server to power off"
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
-		setCondition(m, ConditionSourcePoweredOff, metav1.ConditionTrue, "PoweredOff", "the source server is off")
+		setCondition(m, ConditionSourcePoweredOff, metav1.ConditionTrue, "PoweredOff", "the source server is off ("+how+")")
 	} else {
 		setCondition(m, ConditionSourcePoweredOff, metav1.ConditionUnknown, "NotManaged",
 			"autoShutdownSource is false: make sure the source is off to avoid duplicate IPs")
@@ -514,6 +517,48 @@ func (r *P2VMigrationReconciler) reconcileCutover(ctx context.Context, m *migrat
 	r.setPhase(m, migrationv1alpha1.PhaseCompleted, fmt.Sprintf("VM %s is running on its production networks. "+
 		"Archive the migration to clean up; until then it can be rolled back.", m.Status.VMName))
 	return ctrl.Result{}, nil
+}
+
+// forceOffAfter: with a BMC, a source still on this long after the power-off
+// request is powered off hard.
+const forceOffAfter = 2 * time.Minute
+
+// sourceOff asks the agent to power the source off (through the gateway),
+// and with a BMC confirms it, forces it after forceOffAfter and ejects the
+// live media so a later power-on boots the server's own disks.
+func (r *P2VMigrationReconciler) sourceOff(ctx context.Context, m *migrationv1alpha1.P2VMigration,
+	src *migrationv1alpha1.P2VSource) (bool, string, error) {
+	cond := apimeta.FindStatusCondition(m.Status.Conditions, ConditionSourcePoweredOff)
+	if cond == nil || cond.Reason != "Requested" {
+		setCondition(m, ConditionSourcePoweredOff, metav1.ConditionFalse, "Requested", "asked the live agent to power off the source")
+		cond = apimeta.FindStatusCondition(m.Status.Conditions, ConditionSourcePoweredOff)
+	}
+	if src.Spec.BMC == nil {
+		return !sourceStillUp(src, r.now()), "no heartbeat from the live agent", nil
+	}
+	c, err := connectBMC(ctx, r.APIReader, r.BMC, src)
+	if err != nil {
+		return false, "", err
+	}
+	defer c.Close()
+	on, err := c.PowerOn()
+	if err != nil {
+		return false, "", err
+	}
+	how := "confirmed by the BMC"
+	if on {
+		if r.now().Sub(cond.LastTransitionTime.Time) < forceOffAfter {
+			return false, "", nil
+		}
+		if err := c.ForceOff(); err != nil {
+			return false, "", err
+		}
+		how = "forced off through the BMC after the OS did not shut down"
+	}
+	if err := c.EjectAll(); err != nil {
+		return false, "", fmt.Errorf("ejecting the live media: %w", err)
+	}
+	return true, how, nil
 }
 
 // sourceStillUp reports whether the live agent is still heartbeating.
@@ -626,11 +671,43 @@ func (r *P2VMigrationReconciler) reconcileRollback(ctx context.Context, m *migra
 			return ctrl.Result{}, err
 		}
 	}
+	msg := fmt.Sprintf("VM %s is stopped. Power the source server on and boot it from its own disks "+
+		"(remove the metal2vm boot media); its disks were never modified.", m.Status.VMName)
+	src, err := r.source(ctx, m)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if src != nil && src.Spec.BMC != nil {
+		c, err := connectBMC(ctx, r.APIReader, r.BMC, src)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		defer c.Close()
+		// Decide from the BMC, not the (possibly stale) cache, so a repeated
+		// rollback never restarts a server that already runs its own OS:
+		//   off                -> boot from disk
+		//   on, live ISO in    -> still in the live environment: eject and reboot from disk
+		//   on, no live ISO    -> already back on its own OS: leave it alone
+		on, err := c.PowerOn()
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		_, inserted, err := c.InsertedMedia()
+		if err != nil {
+			inserted = false // no virtual media device: nothing can be inserted
+		}
+		if !on || inserted {
+			if err := c.BootFromDisk(); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		msg = fmt.Sprintf("VM %s is stopped and %s is booting from its own disks through its BMC; "+
+			"its disks were never modified.", m.Status.VMName, src.Name)
+	}
 	now := metav1.NewTime(r.now())
 	m.Status.CompletedAt = &now
 	setCondition(m, "Ready", metav1.ConditionFalse, "RolledBack", "migration rolled back")
-	r.setPhase(m, migrationv1alpha1.PhaseRolledBack, fmt.Sprintf("VM %s is stopped. Power the source server on "+
-		"and boot it from its own disks (remove the metal2vm boot media); its disks were never modified.", m.Status.VMName))
+	r.setPhase(m, migrationv1alpha1.PhaseRolledBack, msg)
 	return ctrl.Result{}, nil
 }
 

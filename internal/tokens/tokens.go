@@ -40,6 +40,9 @@ const (
 	KeyToken         = "token"
 	KeyExpiresAt     = "expiresAt"
 	KeyISOURL        = "isoURL"
+	KeyISOHTTPURL    = "isoHTTPURL"
+	KeyIPXEURL       = "ipxeURL"
+	KeyIPXEHTTPURL   = "ipxeHTTPURL"
 )
 
 // Generate returns a new random 256-bit URL-safe secret.

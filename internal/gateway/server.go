@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,11 @@ const (
 	CACertKey = "ca.crt"
 	// Port is the container port the gateway listens on.
 	Port = 9444
+	// HTTPPort serves boot artifacts over plain HTTP (when exposed).
+	HTTPPort = 9445
+	// BootHTTPServiceName and BootHTTPRouteName expose HTTPPort.
+	BootHTTPServiceName = "metal2vm-boot-http"
+	BootHTTPRouteName   = "metal2vm-boot-http"
 )
 
 // Condition types set by the gateway on P2VSource.
@@ -74,7 +80,12 @@ type Server struct {
 	AgentPath string
 	// ToolsPath is the live-tools rootfs (nbdkit) tarball served to agents.
 	ToolsPath string
-	Log       logr.Logger
+	// PXEDir holds the live kernel, initramfs.img and rootfs.img.
+	PXEDir string
+	// HTTPAddr, when set, also serves boot artifacts (ISO, PXE) over plain
+	// HTTP for BMCs and iPXE that cannot use HTTPS. The agent API stays HTTPS.
+	HTTPAddr string
+	Log      logr.Logger
 	// Now is overridable for tests.
 	Now func() time.Time
 
@@ -94,31 +105,58 @@ func (s *Server) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: s.getCertificate},
 	}
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() { errCh <- srv.ListenAndServeTLS("", "") }()
 	s.Log.Info("gateway listening", "addr", s.Addr)
+	servers := []*http.Server{srv}
+	if s.HTTPAddr != "" {
+		plain := &http.Server{Addr: s.HTTPAddr, Handler: s.BootHandler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() { errCh <- plain.ListenAndServe() }()
+		s.Log.Info("boot media HTTP listener", "addr", s.HTTPAddr)
+		servers = append(servers, plain)
+	}
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		for _, hs := range servers {
+			_ = hs.Shutdown(shutdownCtx)
+		}
+		return nil
 	case err := <-errCh:
 		return err
 	}
 }
 
-// Handler returns the HTTP routes.
+// Handler returns the HTTPS routes: boot artifacts and the agent API.
 func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
+	mux := s.bootMux()
 	mux.HandleFunc("GET "+boot.AgentDownloadPath, s.serveAgent)
-	mux.HandleFunc("GET /boot/v1/iso/{file}", s.serveISO)
 	mux.HandleFunc("GET "+protocol.ToolsDownloadPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/gzip")
 		http.ServeFile(w, r, s.ToolsPath)
 	})
 	mux.HandleFunc("POST "+protocol.InventoryPath, s.handleInventory)
 	mux.HandleFunc("POST "+protocol.HeartbeatPath, s.handleHeartbeat)
+	return mux
+}
+
+// BootHandler returns only the boot artifact routes, for the plain HTTP listener.
+func (s *Server) BootHandler() http.Handler { return s.bootMux() }
+
+func (s *Server) bootMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
+	mux.HandleFunc("GET /boot/v1/iso/{file}", s.serveISO)
+	for _, f := range []string{"kernel", "initramfs.img", "rootfs.img"} {
+		mux.HandleFunc("GET /boot/v1/pxe/"+f, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			http.ServeFile(w, r, filepath.Join(s.PXEDir, f))
+		})
+	}
+	mux.HandleFunc("GET /boot/v1/pxe-mac/{mac}", s.serveIPXEByMAC)
+	mux.HandleFunc("GET /boot/v1/pxe/{key}/boot.ipxe", s.serveIPXE)
+	mux.HandleFunc("GET /boot/v1/pxe/{key}/ignition.img", s.servePXEIgnition)
 	return mux
 }
 

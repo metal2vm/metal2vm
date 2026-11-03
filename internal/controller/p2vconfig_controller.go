@@ -48,6 +48,9 @@ import (
 // ConditionAvailable is set on P2VConfig when the gateway is reachable.
 const ConditionAvailable = "Available"
 
+// kindService is the Route target kind.
+const kindService = "Service"
+
 // Common labels on objects metal2vm creates.
 const (
 	LabelPartOf = "app.kubernetes.io/part-of"
@@ -122,6 +125,11 @@ func (r *P2VConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.ensureServingCert(ctx, ca, host); err != nil {
 		return ctrl.Result{}, fmt.Errorf("gateway certificate: %w", err)
 	}
+	httpURL, err := r.reconcileBootHTTP(ctx, &cfg)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("boot media HTTP: %w", err)
+	}
+	cfg.Status.BootMediaHTTPURL = httpURL
 	if err := r.setAvailable(ctx, &cfg, "https://"+host, metav1.ConditionTrue, "GatewayReady",
 		"live agents connect to https://"+host+" (port 443)"); err != nil {
 		return ctrl.Result{}, err
@@ -132,7 +140,14 @@ func (r *P2VConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 func (r *P2VConfigReconciler) setAvailable(ctx context.Context, cfg *migrationv1alpha1.P2VConfig, url string,
 	status metav1.ConditionStatus, reason, msg string) error {
-	patch := client.MergeFrom(cfg.DeepCopy())
+	httpURL := cfg.Status.BootMediaHTTPURL
+	var fresh migrationv1alpha1.P2VConfig
+	if err := r.Get(ctx, client.ObjectKeyFromObject(cfg), &fresh); err != nil {
+		return err
+	}
+	*cfg = fresh
+	patch := client.MergeFrom(fresh.DeepCopy())
+	cfg.Status.BootMediaHTTPURL = httpURL
 	cfg.Status.GatewayURL = url
 	apimeta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 		Type: ConditionAvailable, Status: status, Reason: reason, Message: msg, ObservedGeneration: cfg.Generation,
@@ -188,7 +203,7 @@ func (r *P2VConfigReconciler) ensureRoute(ctx context.Context, cfg *migrationv1a
 		if cfg.Spec.Gateway.Hostname != "" {
 			route.Spec.Host = cfg.Spec.Gateway.Hostname
 		}
-		route.Spec.To = routev1.RouteTargetReference{Kind: "Service", Name: gateway.ServiceName}
+		route.Spec.To = routev1.RouteTargetReference{Kind: kindService, Name: gateway.ServiceName}
 		route.Spec.Port = &routev1.RoutePort{TargetPort: intstr.FromString("https")}
 		route.Spec.TLS = &routev1.TLSConfig{
 			Termination:                   routev1.TLSTerminationPassthrough,
@@ -218,6 +233,42 @@ func (r *P2VConfigReconciler) ensureServingCert(ctx context.Context, ca pki.KeyP
 		return nil
 	})
 	return err
+}
+
+// reconcileBootHTTP exposes the plain HTTP boot listener when enabled and
+// removes it otherwise. It returns the HTTP base URL or "".
+func (r *P2VConfigReconciler) reconcileBootHTTP(ctx context.Context, cfg *migrationv1alpha1.P2VConfig) (string, error) {
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: gateway.BootHTTPServiceName, Namespace: r.Namespace}}
+	route := &routev1.Route{ObjectMeta: metav1.ObjectMeta{Name: gateway.BootHTTPRouteName, Namespace: r.Namespace}}
+	if !cfg.Spec.Gateway.BootMediaHTTP {
+		for _, o := range []client.Object{route, svc} {
+			if err := r.Delete(ctx, o); client.IgnoreNotFound(err) != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+		svc.Labels = labelled(nil)
+		svc.Spec.Selector = OperatorPodLabels
+		svc.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: 80, TargetPort: intstr.FromInt32(gateway.HTTPPort)}}
+		return controllerutil.SetControllerReference(cfg, svc, r.Scheme)
+	}); err != nil {
+		return "", err
+	}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
+		route.Labels = labelled(nil)
+		route.Spec.To = routev1.RouteTargetReference{Kind: kindService, Name: gateway.BootHTTPServiceName}
+		route.Spec.Port = &routev1.RoutePort{TargetPort: intstr.FromString("http")}
+		route.Spec.TLS = nil
+		return controllerutil.SetControllerReference(cfg, route, r.Scheme)
+	}); err != nil {
+		return "", err
+	}
+	if route.Spec.Host == "" {
+		return "", nil
+	}
+	return "http://" + route.Spec.Host, nil
 }
 
 // EnsureDefaultConfig creates the P2VConfig singleton if it does not exist,

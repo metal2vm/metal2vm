@@ -380,7 +380,7 @@ func (r *P2VMigrationReconciler) ensureTunnel(ctx context.Context, m *migrationv
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, route, func() error {
 		route.Labels = labels
 		route.Spec.Host = host
-		route.Spec.To = routev1.RouteTargetReference{Kind: "Service", Name: name}
+		route.Spec.To = routev1.RouteTargetReference{Kind: kindService, Name: name}
 		route.Spec.Port = &routev1.RoutePort{TargetPort: intstr.FromString(tunnelPortName)}
 		route.Spec.TLS = &routev1.TLSConfig{
 			Termination:                   routev1.TLSTerminationPassthrough,

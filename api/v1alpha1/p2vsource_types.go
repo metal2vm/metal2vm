@@ -59,6 +59,13 @@ type BMCAccess struct {
 	// insecureSkipVerify disables TLS verification of the BMC certificate.
 	// +optional
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+
+	// mediaProtocol is how the BMC fetches the live ISO. HTTP needs
+	// P2VConfig spec.gateway.bootMediaHTTP.
+	// +kubebuilder:validation:Enum=HTTPS;HTTP
+	// +kubebuilder:default=HTTPS
+	// +optional
+	MediaProtocol string `json:"mediaProtocol,omitempty"`
 }
 
 // PXEAccess identifies the server's PXE boot interface.
@@ -118,6 +125,10 @@ type P2VSourceStatus struct {
 	// +optional
 	Agent *AgentStatus `json:"agent,omitempty"`
 
+	// bmc is what the last BMC check found.
+	// +optional
+	BMC *BMCStatus `json:"bmc,omitempty"`
+
 	// osConfig is what the OS pre-check found on the running source OS
 	// (spec.osAccess). The live agent never overwrites it.
 	// +optional
@@ -128,6 +139,24 @@ type P2VSourceStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// BMCStatus is the identity and power state reported by the BMC.
+type BMCStatus struct {
+	// +required
+	CheckedAt metav1.Time `json:"checkedAt"`
+	// +optional
+	Manufacturer string `json:"manufacturer,omitempty"`
+	// +optional
+	Model string `json:"model,omitempty"`
+	// +optional
+	SerialNumber string `json:"serialNumber,omitempty"`
+	// powerState is On or Off.
+	// +optional
+	PowerState string `json:"powerState,omitempty"`
+	// virtualMedia is true when the BMC offers CD/DVD virtual media.
+	// +optional
+	VirtualMedia bool `json:"virtualMedia,omitempty"`
 }
 
 // OSConfig is the running OS's identity and network configuration.

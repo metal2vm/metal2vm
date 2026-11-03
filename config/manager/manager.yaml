@@ -61,7 +61,7 @@ spec:
       # Copies the live ISO and live-tools rootfs out of the boot-artifacts image.
       - name: boot-artifacts
         image: boot-artifacts:latest
-        command: ["cp", "/boot/live.iso", "/boot/live-tools.tar.gz", "/var/lib/metal2vm/boot/"]
+        command: ["cp", "-R", "/boot/live.iso", "/boot/live-tools.tar.gz", "/boot/pxe", "/var/lib/metal2vm/boot/"]
         securityContext:
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
@@ -86,6 +86,7 @@ spec:
           - --health-probe-bind-address=:8081
           - --live-iso=/var/lib/metal2vm/boot/live.iso
           - --live-tools=/var/lib/metal2vm/boot/live-tools.tar.gz
+          - --pxe-dir=/var/lib/metal2vm/boot/pxe
           - --agent-binary=/metal2vm-agent
         image: controller:latest
         name: manager
@@ -104,6 +105,9 @@ spec:
           protocol: TCP
         - containerPort: 9444
           name: gateway
+          protocol: TCP
+        - containerPort: 9445
+          name: boot-http
           protocol: TCP
         securityContext:
           readOnlyRootFilesystem: true
@@ -139,6 +143,6 @@ spec:
       volumes:
       - name: boot
         emptyDir:
-          sizeLimit: 2Gi
+          sizeLimit: 4Gi
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

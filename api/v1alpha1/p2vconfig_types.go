@@ -64,8 +64,10 @@ type GatewayConfig struct {
 	// +optional
 	Hostname string `json:"hostname,omitempty"`
 
-	// bootMediaHTTP also serves boot ISOs over plain HTTP for BMCs that
-	// cannot fetch virtual media over HTTPS.
+	// bootMediaHTTP also serves boot artifacts (ISO, PXE) over plain HTTP,
+	// for BMCs and iPXE that cannot use HTTPS. The boot token then crosses the
+	// network unencrypted: use it on trusted provisioning networks only. The
+	// agent API always stays on HTTPS.
 	// +optional
 	BootMediaHTTP bool `json:"bootMediaHTTP,omitempty"`
 }
@@ -87,6 +89,10 @@ type P2VConfigStatus struct {
 	// gatewayURL is the URL live agents connect to.
 	// +optional
 	GatewayURL string `json:"gatewayURL,omitempty"`
+
+	// bootMediaHTTPURL serves boot artifacts over plain HTTP (bootMediaHTTP).
+	// +optional
+	BootMediaHTTPURL string `json:"bootMediaHTTPURL,omitempty"`
 
 	// conditions: Available, Degraded.
 	// +listType=map

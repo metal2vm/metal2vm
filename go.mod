@@ -12,6 +12,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	github.com/openshift/api v0.0.0-20261102174502-e51674a80650
+	github.com/stmcginnis/gofish v0.27.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
