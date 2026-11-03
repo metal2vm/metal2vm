@@ -1,5 +1,6 @@
 # Transfer pod image: accepts the live agent's tunnel and copies disks into
-# PVCs with nbdcopy (libnbd). Guest conversion (virt-v2v) is added in M3.
+# PVCs with nbdcopy (libnbd), then converts the guest in place with
+# virt-v2v-in-place (virtio drivers, bootloader, initramfs, Windows drivers).
 # Build from the repository root: -f images/transfer/Containerfile .
 ARG BASE_IMAGE=docker.io/library/golang:1.27
 FROM ${BASE_IMAGE} AS builder
@@ -11,9 +12,24 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o metal2vm-transfer ./cmd/transfer
 
 FROM quay.io/centos/centos:stream10
-# Install by file path so the image does not depend on package naming.
-RUN dnf -y install --setopt=install_weak_deps=False --nodocs /usr/bin/nbdcopy && \
-    dnf clean all && rm -rf /var/cache/dnf
+# virtio-win (Windows drivers) is not in CentOS. The upstream repo is unsigned,
+# so the exact build is pinned by SHA-256. License: BSD-3-Clause (drivers),
+# Apache-2.0, GPL-2.0 tools; see /licenses/virtio-win_license.txt.
+ARG VIRTIO_WIN_VERSION=0.1.302-1
+ARG VIRTIO_WIN_SHA256=2f58eea024e0221a873032761dc3ed3262409cd80860b7b27d3d5a0f206616c9
+RUN curl -fsSL -o /tmp/virtio-win.rpm \
+      "https://fedorapeople.org/groups/virt/virtio-win/repo/stable/virtio-win-${VIRTIO_WIN_VERSION}.noarch.rpm" && \
+    echo "${VIRTIO_WIN_SHA256}  /tmp/virtio-win.rpm" | sha256sum -c - && \
+    dnf -y install --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+      /usr/bin/nbdcopy virt-v2v cpio /tmp/virtio-win.rpm && \
+    mkdir -p /licenses && \
+    rpm2cpio /tmp/virtio-win.rpm | cpio -i --quiet --to-stdout ./usr/share/doc/virtio-win/virtio-win_license.txt \
+      > /licenses/virtio-win_license.txt && \
+    test -s /licenses/virtio-win_license.txt && \
+    rm -f /tmp/virtio-win.rpm && dnf clean all && rm -rf /var/cache/dnf
+# libguestfs runs its appliance directly with qemu (no libvirtd in the pod).
+ENV LIBGUESTFS_BACKEND=direct \
+    HOME=/var/tmp
 COPY --from=builder /workspace/metal2vm-transfer /usr/local/bin/metal2vm-transfer
 COPY LICENSE NOTICE /licenses/
 LABEL org.opencontainers.image.title="metal2vm transfer" \

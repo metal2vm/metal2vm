@@ -87,5 +87,6 @@ patches:
       value: $xferimg
 EOF
   hack/toolbox.sh bash -c "make kustomize >/dev/null && bin/kustomize build $(basename "$work")" | kubectl apply --server-side -f -
+  kubectl apply --server-side -k config/scc
   kubectl -n "$NS" rollout status deploy/metal2vm-controller-manager --timeout=300s ;;
 esac

@@ -34,6 +34,7 @@ import (
 
 	configv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -64,6 +65,7 @@ var _ = BeforeSuite(func() {
 	var err error
 	Expect(routev1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(configv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(kubevirtv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	err = migrationv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 

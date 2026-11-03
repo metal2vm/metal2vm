@@ -43,3 +43,9 @@ func ShowStatus(lines ...string) {
 	}
 	_ = exec.Command("agetty", "--reload").Run()
 }
+
+// PowerOff shuts the server down. Source disks are untouched; booting the
+// server from its own disks again rolls the migration back.
+func PowerOff() error {
+	return exec.Command("systemctl", "poweroff").Run()
+}

@@ -199,3 +199,10 @@ func TestMemoryFallsBackToMeminfo(t *testing.T) {
 		t.Fatalf("memory %d", got)
 	}
 }
+
+func TestSanitizeIDCollapsesPadding(t *testing.T) {
+	got := sanitizeID("wwn-t10.ATA     QEMU HARDDISK                           M2V-ROOT-01")
+	if got != "wwn-t10.ata-qemu-harddisk-m2v-root-01" {
+		t.Fatalf("got %q", got)
+	}
+}

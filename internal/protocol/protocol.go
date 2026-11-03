@@ -45,6 +45,8 @@ type HeartbeatResponse struct {
 	// Transfer, when set, asks the agent to export disks through a tunnel.
 	// When it disappears, the agent stops exporting.
 	Transfer *TransferInstruction `json:"transfer,omitempty"`
+	// PowerOff asks the agent to power the server off (cutover).
+	PowerOff bool `json:"powerOff,omitempty"`
 }
 
 // TransferInstruction tells the agent how to serve disks to a transfer pod.

@@ -324,9 +324,17 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.Log.Error(err, "looking up transfer", "namespace", src.Namespace, "source", src.Name)
 	}
+	powerOff, err := s.powerOffRequested(r.Context(), src)
+	if err != nil {
+		s.Log.Error(err, "looking up cutover", "namespace", src.Namespace, "source", src.Name)
+	}
+	if powerOff {
+		s.Log.Info("asking the live agent to power off the source", "namespace", src.Namespace, "source", src.Name)
+	}
 	writeJSON(w, protocol.HeartbeatResponse{
 		ResendInventory: src.Status.Inventory == nil || src.Status.Inventory.CollectedBy != v1alpha1.InventoryFromLiveAgent,
 		Transfer:        transfer,
+		PowerOff:        powerOff,
 	})
 }
 
@@ -358,6 +366,22 @@ func (s *Server) transferFor(ctx context.Context, src *v1alpha1.P2VSource) (*pro
 		}, nil
 	}
 	return nil, nil
+}
+
+// powerOffRequested reports whether a migration of src is cutting over and
+// allowed to power the source off.
+func (s *Server) powerOffRequested(ctx context.Context, src *v1alpha1.P2VSource) (bool, error) {
+	var list v1alpha1.P2VMigrationList
+	if err := s.Client.List(ctx, &list, client.InNamespace(src.Namespace)); err != nil {
+		return false, err
+	}
+	for _, m := range list.Items {
+		if m.Spec.SourceRef.Name == src.Name && m.Status.Phase == v1alpha1.PhaseCuttingOver &&
+			(m.Spec.AutoShutdownSource == nil || *m.Spec.AutoShutdownSource) && !m.Spec.Rollback {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // TokenTTLAnnotation on a boot Secret records the TTL it was issued with.

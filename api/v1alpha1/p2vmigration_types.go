@@ -236,7 +236,9 @@ type NICMapping struct {
 	// +optional
 	NetworkName string `json:"networkName,omitempty"`
 
-	// keepMAC gives the VM NIC the source MAC address.
+	// keepMAC gives the VM NIC the source MAC address on multus networks.
+	// On the pod network the source MAC is always kept: it never leaves the
+	// pod, and guests often bind network config to it.
 	// +optional
 	KeepMAC bool `json:"keepMAC,omitempty"`
 
@@ -283,6 +285,10 @@ type P2VMigrationStatus struct {
 	// +optional
 	VMName string `json:"vmName,omitempty"`
 
+	// guest is what guest conversion found inside the disks.
+	// +optional
+	Guest *GuestInfo `json:"guest,omitempty"`
+
 	// agent is the live agent connection state.
 	// +optional
 	Agent *AgentStatus `json:"agent,omitempty"`
@@ -298,11 +304,30 @@ type P2VMigrationStatus struct {
 	// +optional
 	Preflight []PreflightResult `json:"preflight,omitempty"`
 
-	// conditions: Ready, PreflightPassed, AgentConnected, Copied, Converted, SourcePoweredOff.
+	// conditions: Ready, PreflightPassed, AgentConnected, Copied, Converted, SourcePoweredOff, VMReady.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// GuestInfo describes the operating system found during conversion.
+type GuestInfo struct {
+	// family is linux or windows.
+	// +optional
+	Family OSFamily `json:"family,omitempty"`
+	// distro as reported by libguestfs, e.g. rhel, ubuntu, windows.
+	// +optional
+	Distro string `json:"distro,omitempty"`
+	// osinfo is the libosinfo short ID, e.g. rhel9.8, win2k22.
+	// +optional
+	OSInfo string `json:"osinfo,omitempty"`
+	// productName, e.g. "Red Hat Enterprise Linux 9.8 (Plow)".
+	// +optional
+	ProductName string `json:"productName,omitempty"`
+	// firmware the converted guest needs to boot.
+	// +optional
+	Firmware FirmwareType `json:"firmware,omitempty"`
 }
 
 type AgentStatus struct {
@@ -327,6 +352,9 @@ type DiskStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Copying;Copied;Attached;Skipped;Failed
 	// +optional
 	Phase string `json:"phase,omitempty"`
+	// bootOrder from guest conversion; 0 means not bootable.
+	// +optional
+	BootOrder int32 `json:"bootOrder,omitempty"`
 }
 
 // PreflightSeverity tells whether a failed check blocks the migration.
@@ -357,6 +385,7 @@ type PreflightResult struct {
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="VM",type=string,JSONPath=`.status.vmName`
+// +kubebuilder:printcolumn:name="Guest",type=string,JSONPath=`.status.guest.osinfo`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // P2VMigration migrates one P2VSource to a VirtualMachine.

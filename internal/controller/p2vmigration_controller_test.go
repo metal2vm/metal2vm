@@ -26,7 +26,9 @@ import (
 	. "github.com/onsi/gomega"
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
+
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
+	"github.com/metal2vm/metal2vm/internal/convert"
 	"github.com/metal2vm/metal2vm/internal/names"
 	"github.com/metal2vm/metal2vm/internal/protocol"
 	"github.com/metal2vm/metal2vm/internal/transfer"
@@ -54,7 +59,7 @@ var _ = Describe("P2VMigration Controller", func() {
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, src) })
 		now := metav1.NewTime(time.Now().Truncate(time.Second))
 		src.Status.Inventory = &migrationv1alpha1.Inventory{
-			CollectedAt: now, CollectedBy: migrationv1alpha1.InventoryFromLiveAgent,
+			CollectedAt: now, CollectedBy: migrationv1alpha1.InventoryFromLiveAgent, MemoryMiB: 4096,
 			Disks: []migrationv1alpha1.Disk{
 				{ID: "root", Path: "/dev/vda", SizeBytes: 30 * gib},
 				{ID: "data", Path: "/dev/sda", SizeBytes: 5*gib + 123},
@@ -86,7 +91,14 @@ var _ = Describe("P2VMigration Controller", func() {
 	}
 	reconciler := func() *P2VMigrationReconciler {
 		return &P2VMigrationReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Namespace: operatorNS,
-			TransferImage: "registry.example.com/metal2vm/transfer@sha256:abc"}
+			TransferImage: "registry.example.com/metal2vm/transfer@sha256:abc", OpenShift: true}
+	}
+	succeed := func(pod *corev1.Pod, message string) {
+		pod.Status.Phase = corev1.PodSucceeded
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: pod.Spec.Containers[0].Name, State: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Message: message},
+		}}}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
 	}
 	reconcileN := func(m *migrationv1alpha1.P2VMigration, n int) {
 		r := reconciler()
@@ -163,21 +175,122 @@ var _ = Describe("P2VMigration Controller", func() {
 		Expect(m.Status.Disks).To(HaveLen(3))
 		Expect(m.Status.Disks[2].Phase).To(Equal("Skipped"))
 
-		By("finishing when the transfer pod succeeds")
+		By("moving to Converting when the transfer pod succeeds")
 		final, _ := json.Marshal(transfer.Status{Done: true, Disks: []transfer.DiskStatus{
 			{DiskID: "root", Phase: transfer.DiskCopied, BytesTotal: 30 * gib, BytesCopied: 30 * gib},
 			{DiskID: "data", Phase: transfer.DiskCopied, BytesTotal: 5*gib + 123, BytesCopied: 5*gib + 123},
 		}})
-		pod.Status.Phase = corev1.PodSucceeded
-		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "transfer", State: corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Message: string(final)},
-		}}}
-		Expect(k8sClient.Status().Update(ctx, &pod)).To(Succeed())
+		succeed(&pod, string(final))
 		reconcileN(m, 1)
 		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseConverting))
 		Expect(apimeta.IsStatusConditionTrue(m.Status.Conditions, ConditionCopied)).To(BeTrue())
 		Expect(m.Status.Disks[1].BytesCopied).To(Equal(5*gib + 123))
 		Expect(m.Status.Disks[1].Phase).To(Equal("Copied"))
+
+		By("running a conversion pod with /dev/kvm and the unshare seccomp profile")
+		reconcileN(m, 1)
+		var conv corev1.Pod
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "mig-a-convert"}, &conv)).To(Succeed())
+		Expect(conv.Spec.ServiceAccountName).To(Equal(ConversionServiceAccount))
+		Expect(*conv.Spec.SecurityContext.SeccompProfile.LocalhostProfile).To(Equal("profiles/unshare.json"))
+		Expect(conv.Spec.Containers[0].Args).To(Equal([]string{"convert"}))
+		Expect(conv.Spec.Containers[0].Resources.Limits).To(HaveKey(corev1.ResourceName("devices.kubevirt.io/kvm")))
+		var rb rbacv1.RoleBinding
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: ConversionServiceAccount}, &rb)).To(Succeed())
+		Expect(rb.RoleRef.Name).To(Equal(ConversionSCCRole))
+
+		By("creating a network-less test VM that owns the disks")
+		res, _ := json.Marshal(convert.Result{Firmware: "uefi",
+			OS:    convert.OS{Name: "linux", Distro: "rhel", OSInfo: "rhel9.8", ProductName: "Red Hat Enterprise Linux 9.8"},
+			Disks: []convert.DiskInfo{{Index: 0, BootOrder: 1}, {Index: 1, BootOrder: 3}}})
+		succeed(&conv, string(res))
+		reconcileN(m, 1)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseTesting))
+		Expect(m.Status.Guest.OSInfo).To(Equal("rhel9.8"))
+		Expect(m.Status.Disks[0].BootOrder).To(Equal(int32(1)))
+		var vm kubevirtv1.VirtualMachine
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "srv-a"}, &vm)).To(Succeed())
+		Expect(vm.Spec.Template.Spec.Networks).To(BeEmpty())
+		Expect(*vm.Spec.Template.Spec.Domain.Devices.Disks[0].BootOrder).To(Equal(uint(1)))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: names.DiskPVC("mig-a", 0)}, &pvc)).To(Succeed())
+		Expect(pvc.OwnerReferences).To(HaveLen(1))
+		Expect(pvc.OwnerReferences[0].Kind).To(Equal("VirtualMachine"))
+
+		By("waiting for the admin's decision while testing")
+		reconcileN(m, 2)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseTesting))
+		Expect(m.Status.Message).To(ContainSubstring("WITHOUT network"))
+
+		By("powering off the source at cutover before touching the VM")
+		now := metav1.Now()
+		m.Spec.Cutover = &now
+		Expect(k8sClient.Update(ctx, m)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(src), src)).To(Succeed())
+		fresh := metav1.NewTime(time.Now().Truncate(time.Second))
+		src.Status.Agent = &migrationv1alpha1.AgentStatus{Connected: true, LastHeartbeat: &fresh}
+		Expect(k8sClient.Status().Update(ctx, src)).To(Succeed())
+		reconcileN(m, 2)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseCuttingOver))
+		Expect(m.Status.Message).To(ContainSubstring("power off"))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&vm), &vm)).To(Succeed())
+		Expect(vm.Spec.Template.Spec.Networks).To(BeEmpty(), "the VM must stay offline while the source is up")
+
+		By("switching the VM to production networking once the source is off")
+		src.Status.Agent.Connected = false
+		Expect(k8sClient.Status().Update(ctx, src)).To(Succeed())
+		reconcileN(m, 1)
+		Expect(apimeta.IsStatusConditionTrue(m.Status.Conditions, ConditionSourcePoweredOff)).To(BeTrue())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&vm), &vm)).To(Succeed())
+		Expect(vm.Annotations).To(HaveKey(annotationCutoverRestart))
+
+		By("not completing on the stale Ready flag of the test instance")
+		vm.Status.Ready = true
+		Expect(k8sClient.Status().Update(ctx, &vm)).To(Succeed())
+		reconcileN(m, 1)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseCuttingOver))
+
+		By("completing once a new instance is running and ready")
+		vmi := &kubevirtv1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: vm.Name, Namespace: ns}}
+		Expect(k8sClient.Create(ctx, vmi)).To(Succeed())
+		vmi.Status.Phase = kubevirtv1.Running
+		vmi.Status.Conditions = []kubevirtv1.VirtualMachineInstanceCondition{
+			{Type: kubevirtv1.VirtualMachineInstanceReady, Status: corev1.ConditionTrue}}
+		Expect(k8sClient.Status().Update(ctx, vmi)).To(Succeed())
+		reconcileN(m, 1)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseCompleted))
+
+		By("cleaning up temporary resources when archived")
+		m.Spec.Archived = true
+		Expect(k8sClient.Update(ctx, m)).To(Succeed())
+		reconcileN(m, 1)
+		Expect(apimeta.IsStatusConditionTrue(m.Status.Conditions, ConditionArchived)).To(BeTrue())
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: names.Transfer("mig-a")}, &routev1.Route{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: names.DiskPVC("mig-a", 0)}, &pvc)).To(Succeed(),
+			"archiving must never delete the VM's disks")
+	})
+
+	It("rolls back by stopping the VM", func() {
+		newSourceWithInventory("srv-d", true)
+		m := newMigration("mig-d", "srv-d", func(s *migrationv1alpha1.P2VMigrationSpec) { s.Disks = s.Disks[:1] })
+		reconcileN(m, 6)
+		var pod corev1.Pod
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: names.Transfer("mig-d")}, &pod)).To(Succeed())
+		succeed(&pod, `{"done":true}`)
+		reconcileN(m, 2)
+		var conv corev1.Pod
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "mig-d-convert"}, &conv)).To(Succeed())
+		succeed(&conv, `{"firmware":"bios","os":{"name":"linux","osinfo":"ubuntu24.04"}}`)
+		reconcileN(m, 1)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseTesting))
+
+		m.Spec.Rollback = true
+		Expect(k8sClient.Update(ctx, m)).To(Succeed())
+		reconcileN(m, 1)
+		Expect(m.Status.Phase).To(Equal(migrationv1alpha1.PhaseRolledBack))
+		var vm kubevirtv1.VirtualMachine
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "srv-d"}, &vm)).To(Succeed())
+		Expect(*vm.Spec.RunStrategy).To(Equal(kubevirtv1.RunStrategyHalted))
 	})
 
 	It("reports every pre-flight blocker at once", func() {

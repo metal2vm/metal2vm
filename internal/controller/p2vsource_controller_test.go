@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"strings"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -108,3 +109,11 @@ var _ = Describe("P2VSource Controller", func() {
 		Expect(src.Status.Agent.Connected).To(BeFalse())
 	})
 })
+
+func TestHumanBytes(t *testing.T) {
+	for n, want := range map[int64]string{512: "512 B", 1536: "1.5 KiB", 322122547: "307.2 MiB", 35 << 30: "35.0 GiB", 3 << 40: "3.0 TiB"} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

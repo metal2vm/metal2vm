@@ -270,7 +270,12 @@ func sanitizeID(s string) string {
 			b.WriteByte('-')
 		}
 	}
-	return strings.Trim(b.String(), "-.")
+	// ATA WWIDs ("t10.ATA     MODEL      SERIAL") pad fields with spaces.
+	out := b.String()
+	for strings.Contains(out, "--") {
+		out = strings.ReplaceAll(out, "--", "-")
+	}
+	return strings.Trim(out, "-.")
 }
 
 // transport derives the attachment type from the device's sysfs path.

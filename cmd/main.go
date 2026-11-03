@@ -32,8 +32,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,6 +64,7 @@ func init() {
 	utilruntime.Must(migrationv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(routev1.AddToScheme(scheme))
 	utilruntime.Must(configv1.AddToScheme(scheme))
+	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -227,11 +230,17 @@ func main() {
 		setupLog.Error(nil, "RELATED_IMAGE_TRANSFER must be set to the transfer image")
 		os.Exit(1)
 	}
+	// On OpenShift, conversion pods use the metal2vm-conversion SCC.
+	_, sccErr := mgr.GetRESTMapper().RESTMapping(
+		schema.GroupKind{Group: "security.openshift.io", Kind: "SecurityContextConstraints"}, "v1")
+	openShift := sccErr == nil
+	setupLog.Info("platform detected", "openshift", openShift)
 	if err := (&controller.P2VMigrationReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		Namespace:     operatorNamespace,
 		TransferImage: transferImage,
+		OpenShift:     openShift,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "p2vmigration")
 		os.Exit(1)

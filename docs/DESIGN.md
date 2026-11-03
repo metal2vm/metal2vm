@@ -211,6 +211,26 @@ Maps the inventory and plan to a KubeVirt `VirtualMachine`:
   - The cluster pulls three images by digest: operator, transfer, boot-artifacts. The transfer image is passed as `RELATED_IMAGE_TRANSFER`, so OLM bundles and oc-mirror pick it up, and `P2VConfig.spec.images` can override it.
   - Only the image builds need internet access (Fedora and CentOS repos).
 
+### 3.8.3 As built in M3: conversion, test boot, cutover
+- **Conversion pod:** the transfer image (CentOS Stream 10, `virt-v2v` 2.13, virtio-win 0.1.302 pinned by SHA-256) runs `/usr/libexec/virt-v2v-in-place -i libvirtxml … -O inspection.xml`. The inspector XML provides the OS (`osinfo`, product name), the firmware the guest needs, and the **boot order per disk**. The pod requests `devices.kubevirt.io/kvm`.
+  - Red Hat marks `virt-v2v-in-place` "not supported for command line use". It ships for MTV/Forklift to call, which is how metal2vm uses it.
+- **SCC:** virt-v2v always enables networking for its conversion VM. Its network helper (`passt`) needs `unshare(2)`, which CRI-O's default seccomp profile blocks. Conversion pods therefore run as SA `metal2vm-conversion` under SCC `metal2vm-conversion`: restricted-v2 plus CRI-O's stock `localhost/profiles/unshare.json`, which ships with the node OS. This is the same approach as MTV. On non-OpenShift clusters they use RuntimeDefault.
+- **VM:** built from the inventory, the plan and the inspector output:
+  - EFI with Secure Boot (and SMM), persistent EFI variables, and a persistent vTPM when the source had a TPM
+  - virtio disks in the inspector's boot order
+  - Hyper-V enlightenments and timers for Windows
+  - the disk PVCs are handed over to the VM, so deleting or archiving the migration never deletes them. This needs RBAC on `virtualmachines/finalizers`.
+- **Phases:**
+  - **Converting**, then **Testing**: the VM runs with *no NIC*. The admin sets `spec.cutover`, or `spec.rollback` to stop the VM.
+  - **CuttingOver**: the agent is asked to power the source off. The source counts as off after 60 seconds without heartbeats. Then the VM gets its planned NICs and restarts. Cutover is complete only when an instance created *after* that restart is Ready.
+  - With `testBoot: false`, the VM is only created once the source is off.
+- **Errors** are surfaced as a `Degraded` condition, because a click-ops admin never sees operator logs.
+- **Network identity, as tested:** guests often bind network config to the NIC's MAC (`HWADDR=` in ifcfg, NetworkManager `mac-address=`, cloud-init `match: macaddress`). On the lab RHEL server, cloud-init had rendered `ifcfg-eth0` bound to the source MAC, and the migrated VM got no IP until it kept that MAC.
+  - The **pod network therefore always keeps the source MAC**. With masquerade it never leaves the pod.
+  - On bridged networks `keepMAC` is the admin's choice. The source is always off before the VM gets its NIC.
+  - Still open for M6: interface **names** that change with the hardware (for example `eno1` becoming `enp1s0`) and static IPs. These need the OS pre-check data and a conversion-time rewrite.
+- **Known risk:** the first boot after migration is the offline test boot, and first-boot tools can remember "no network".
+
 ### 3.9 Required network flows (included in the docs)
 | From | To | Port | Purpose |
 |---|---|---|---|

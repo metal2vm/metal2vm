@@ -203,6 +203,12 @@ func (a *agentLoop) run(ctx context.Context) error {
 					return err
 				}
 			}
+			if resp.PowerOff {
+				a.log.Info("cutover: powering off the server")
+				a.xfer.Stop()
+				a.status("cutover: powering off (the server now runs as a VM)")
+				return agent.PowerOff()
+			}
 			before := a.xfer.Active()
 			if err := a.xfer.Ensure(ctx, resp.Transfer); err != nil {
 				a.log.Error("starting disk export", "error", err)

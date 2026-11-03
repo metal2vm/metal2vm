@@ -37,8 +37,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	routev1 "github.com/openshift/api/route/v1"
+	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
+	"github.com/metal2vm/metal2vm/internal/vmbuilder"
 )
 
 // Condition types set on P2VMigration.
@@ -46,7 +48,16 @@ const (
 	ConditionPreflightPassed = "PreflightPassed"
 	ConditionAgentConnected  = "AgentConnected"
 	ConditionCopied          = "Copied"
+	// ConditionDegraded is true while steps fail and are being retried.
+	ConditionDegraded = "Degraded"
 )
+
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
 
 // requeueSoon moves to the next phase promptly after a phase change.
 var requeueSoon = ctrl.Result{RequeueAfter: 200 * time.Millisecond}
@@ -59,6 +70,8 @@ type P2VMigrationReconciler struct {
 	Namespace string
 	// TransferImage is the default transfer pod image; P2VConfig can override it.
 	TransferImage string
+	// OpenShift enables the conversion SCC and its seccomp profile.
+	OpenShift bool
 	// HTTP polls transfer pods; nil uses a client with a short timeout.
 	HTTP *http.Client
 	Now  func() time.Time
@@ -90,6 +103,12 @@ func (r *P2VMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	orig := m.DeepCopy()
 	res, err := r.step(ctx, &m)
+	// Surface errors in the status: a click-ops admin never sees operator logs.
+	if err != nil {
+		setCondition(&m, ConditionDegraded, metav1.ConditionTrue, "ReconcileError", truncate(err.Error(), 1000))
+	} else if apimeta.IsStatusConditionTrue(m.Status.Conditions, ConditionDegraded) {
+		setCondition(&m, ConditionDegraded, metav1.ConditionFalse, "Recovered", "the last step succeeded")
+	}
 	if !equality.Semantic.DeepEqual(orig.Status, m.Status) {
 		if perr := r.Status().Patch(ctx, &m, client.MergeFrom(orig)); perr != nil && err == nil {
 			err = perr
@@ -100,6 +119,15 @@ func (r *P2VMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 func (r *P2VMigrationReconciler) step(ctx context.Context, m *migrationv1alpha1.P2VMigration) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	if m.Spec.Archived && terminalPhases[m.Status.Phase] {
+		if !apimeta.IsStatusConditionTrue(m.Status.Conditions, ConditionArchived) {
+			return ctrl.Result{}, r.reconcileArchive(ctx, m)
+		}
+		return ctrl.Result{}, nil
+	}
+	if m.Spec.Rollback && rollbackPhases[m.Status.Phase] {
+		return r.reconcileRollback(ctx, m)
+	}
 	switch m.Status.Phase {
 	case "", migrationv1alpha1.PhasePending:
 		now := metav1.NewTime(r.now())
@@ -163,9 +191,13 @@ func (r *P2VMigrationReconciler) step(ctx context.Context, m *migrationv1alpha1.
 		return res, err
 
 	case migrationv1alpha1.PhaseConverting:
-		// Conversion (virt-v2v-in-place) and VM creation arrive in milestone M3.
-		m.Status.Message = "disks copied; guest conversion is not implemented yet (milestone M3)"
-		return ctrl.Result{}, nil
+		return r.reconcileConvert(ctx, m)
+
+	case migrationv1alpha1.PhaseTesting:
+		return r.reconcileTesting(ctx, m)
+
+	case migrationv1alpha1.PhaseCuttingOver:
+		return r.reconcileCutover(ctx, m)
 	}
 	return ctrl.Result{}, nil
 }
@@ -230,6 +262,12 @@ func firstBlocker(results []migrationv1alpha1.PreflightResult) *migrationv1alpha
 		}
 	}
 	return nil
+}
+
+// terminalPhases end a migration; only archiving (and rollback from
+// Completed) act on them.
+var terminalPhases = map[migrationv1alpha1.MigrationPhase]bool{
+	migrationv1alpha1.PhaseCompleted: true, migrationv1alpha1.PhaseRolledBack: true, migrationv1alpha1.PhaseFailed: true,
 }
 
 // activePhases are phases in which a migration holds its source.
@@ -300,6 +338,8 @@ func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1al
 			attach = d.SourceDiskID
 		}
 	}
+	memKnown := (inv != nil && inv.MemoryMiB > 0) || (m.Spec.TargetVM.Memory != nil && !m.Spec.TargetVM.Memory.IsZero())
+	add("VMSizeKnown", inv == nil || memKnown, B, "the source memory size is unknown: set targetVM.memory")
 	add("DisksKnown", unknown == "", B, "disk "+unknown+" is not in the source inventory")
 	add("DiskActionsSupported", attach == "", B, "re-attaching SAN LUNs (disk "+attach+") is not available yet")
 	add("DisksToCopy", copies > 0, B, "at least one disk must be copied")
@@ -375,6 +415,13 @@ func (r *P2VMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&routev1.Route{}).
+		Watches(&kubevirtv1.VirtualMachine{}, handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, o client.Object) []reconcile.Request {
+				if name := o.GetLabels()[vmbuilder.LabelMigration]; name != "" {
+					return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: name}}}
+				}
+				return nil
+			})).
 		Watches(&migrationv1alpha1.P2VSource{}, bySource).
 		Named("p2vmigration").
 		Complete(r)

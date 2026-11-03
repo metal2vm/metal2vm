@@ -20,6 +20,15 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
   - cdi.kubevirt.io
   resources:
   - storageprofiles
@@ -35,6 +44,32 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachineinstances
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachines
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachines/finalizers
+  verbs:
+  - update
 - apiGroups:
   - migration.metal2vm.io
   resources:
@@ -68,6 +103,15 @@ rules:
   - patch
   - update
 - apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
   - route.openshift.io
   resources:
   - routes
@@ -87,6 +131,14 @@ rules:
   - create
   - patch
   - update
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - metal2vm-conversion
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
 - apiGroups:
   - storage.k8s.io
   resources:

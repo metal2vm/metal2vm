@@ -29,6 +29,10 @@ spec:
     - jsonPath: .status.vmName
       name: VM
       type: string
+    - jsonPath: .status.guest.osinfo
+      name: Guest
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -194,7 +198,10 @@ spec:
                         inside the guest.
                       type: boolean
                     keepMAC:
-                      description: keepMAC gives the VM NIC the source MAC address.
+                      description: |-
+                        keepMAC gives the VM NIC the source MAC address on multus networks.
+                        On the pod network the source MAC is always kept: it never leaves the
+                        pod, and guests often bind network config to it.
                       type: boolean
                     networkName:
                       description: networkName is a NetworkAttachmentDefinition as
@@ -327,7 +334,7 @@ spec:
                 type: string
               conditions:
                 description: 'conditions: Ready, PreflightPassed, AgentConnected,
-                  Copied, Converted, SourcePoweredOff.'
+                  Copied, Converted, SourcePoweredOff, VMReady.'
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -390,6 +397,10 @@ spec:
                 items:
                   description: DiskStatus is per-disk progress.
                   properties:
+                    bootOrder:
+                      description: bootOrder from guest conversion; 0 means not bootable.
+                      format: int32
+                      type: integer
                     bytesCopied:
                       format: int64
                       type: integer
@@ -416,6 +427,33 @@ spec:
                 x-kubernetes-list-map-keys:
                 - sourceDiskID
                 x-kubernetes-list-type: map
+              guest:
+                description: guest is what guest conversion found inside the disks.
+                properties:
+                  distro:
+                    description: distro as reported by libguestfs, e.g. rhel, ubuntu,
+                      windows.
+                    type: string
+                  family:
+                    description: family is linux or windows.
+                    enum:
+                    - linux
+                    - windows
+                    - unknown
+                    type: string
+                  firmware:
+                    description: firmware the converted guest needs to boot.
+                    enum:
+                    - bios
+                    - uefi
+                    type: string
+                  osinfo:
+                    description: osinfo is the libosinfo short ID, e.g. rhel9.8, win2k22.
+                    type: string
+                  productName:
+                    description: productName, e.g. "Red Hat Enterprise Linux 9.8 (Plow)".
+                    type: string
+                type: object
               message:
                 description: message is a human-readable summary of the current phase.
                 type: string

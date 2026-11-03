@@ -210,8 +210,21 @@ func copyMessage(st *transfer.Status) string {
 	if total > 0 {
 		pct = int(copied * 100 / total)
 	}
-	return fmt.Sprintf("copying disks: %d%% (%s of %s)", pct,
-		resource.NewQuantity(copied, resource.BinarySI).String(), resource.NewQuantity(total, resource.BinarySI).String())
+	return fmt.Sprintf("copying disks: %d%% (%s of %s)", pct, humanBytes(copied), humanBytes(total))
+}
+
+// humanBytes formats a size for messages, e.g. "12.3 GiB".
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit && exp < 4; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTP"[exp])
 }
 
 // diskPlanEntry is one copied disk with its PVC.
