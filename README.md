@@ -14,7 +14,7 @@ what happens to each disk and network card, start, check the VM, cut over. The
 physical server's disks are only ever read, so rolling back means powering the
 server on again.
 
-**▶ Demo (4½ min, narrated):
+**▶ Demo (4½ min, narrated):**
 
 
 https://github.com/user-attachments/assets/870a490a-e72d-442c-b92c-5c220135bcbd
