@@ -96,7 +96,7 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
 | Disks: re-attach SAN LUNs (FC/iSCSI) instead of copying | ⏳ In the API and UI, blocked by pre-flight until implemented |
 | Network: pod network, Multus (bridge/localnet), keep MAC/IP | ✅ Working |
 | Console plugin (servers, wizard, progress, cutover, rollback) | ✅ Working |
-| Packaging: OLM bundle and catalog, Helm chart, YAML, `oc-mirror` configs | ✅ Ready; first published release pending |
+| Packaging: OLM bundle and catalog, Helm chart, YAML, `oc-mirror` configs | ✅ Published ([v0.1.0](https://github.com/metal2vm/metal2vm/releases/tag/v0.1.0)) |
 
 ## Requirements
 
@@ -125,9 +125,7 @@ registration. Full instructions are in **[docs/install.md](docs/install.md)**.
 Disconnected clusters are covered in **[docs/disconnected.md](docs/disconnected.md)**,
 with ready-made `oc-mirror` configurations.
 
-> [!NOTE]
-> The first release (images, catalog and chart on `ghcr.io`) is not
-> published yet. Until then, build everything on your cluster:
+To build everything on your own cluster instead (development):
 
 ```sh
 git clone https://github.com/metal2vm/metal2vm && cd metal2vm

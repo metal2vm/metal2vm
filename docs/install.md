@@ -16,9 +16,9 @@ There are three ways to install it. All of them install the same things:
 | [YAML](#yaml) | A quick try with `oc` only | Re-apply a newer file |
 
 > [!NOTE]
-> Releases are published to `ghcr.io/metal2vm` (images, bundle, catalog, chart).
-> Images are built for `linux/amd64`. Until the first release, build the images
-> on your cluster instead; see [Development install](#development-install).
+> Releases are published to `ghcr.io/metal2vm` (images, bundle, catalog, chart)
+> and listed on the [releases page](https://github.com/metal2vm/metal2vm/releases).
+> Images are built for `linux/amd64`.
 
 ## What the operator sets up by itself
 
