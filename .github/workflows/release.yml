@@ -47,10 +47,12 @@ jobs:
         run: |
           set -euo pipefail
           r=ghcr.io/metal2vm
-          docker build --build-arg VERSION=v$V -t $r/metal2vm-operator:v$V .
-          docker build --build-arg VERSION=v$V -t $r/metal2vm-transfer:v$V -f images/transfer/Containerfile .
-          docker build -t $r/metal2vm-boot-artifacts:v$V -f images/boot-artifacts/Containerfile images/boot-artifacts
-          docker build -t $r/metal2vm-console-plugin:v$V console-plugin
+          # The source label links each package to this repository on GitHub.
+          l="--label org.opencontainers.image.source=https://github.com/metal2vm/metal2vm --label org.opencontainers.image.licenses=Apache-2.0 --label org.opencontainers.image.version=v$V"
+          docker build $l --build-arg VERSION=v$V -t $r/metal2vm-operator:v$V .
+          docker build $l --build-arg VERSION=v$V -t $r/metal2vm-transfer:v$V -f images/transfer/Containerfile .
+          docker build $l -t $r/metal2vm-boot-artifacts:v$V -f images/boot-artifacts/Containerfile images/boot-artifacts
+          docker build $l -t $r/metal2vm-console-plugin:v$V console-plugin
           for i in operator transfer boot-artifacts console-plugin; do docker push $r/metal2vm-$i:v$V; done
 
       - name: Build and push the OLM bundle and catalog
@@ -60,7 +62,9 @@ jobs:
           set -euo pipefail
           make catalog
           git diff --exit-code -- bundle catalog || { echo "::error::bundle/catalog not regenerated for this version"; exit 1; }
-          make bundle-build catalog-build
+          l="--label org.opencontainers.image.source=https://github.com/metal2vm/metal2vm"
+          docker build $l -f bundle.Dockerfile -t ghcr.io/metal2vm/metal2vm-operator-bundle:v$V .
+          docker build $l -f catalog.Dockerfile -t ghcr.io/metal2vm/metal2vm-operator-catalog:v$V .
           docker push ghcr.io/metal2vm/metal2vm-operator-bundle:v$V
           docker push ghcr.io/metal2vm/metal2vm-operator-catalog:v$V
 
