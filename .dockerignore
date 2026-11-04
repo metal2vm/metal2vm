@@ -19,3 +19,7 @@
 # License files shipped in the image
 !LICENSE
 !NOTICE
+
+# OLM bundle and catalog images (bundle.Dockerfile, catalog.Dockerfile)
+!bundle
+!catalog
