@@ -77,6 +77,10 @@ type P2VMigrationReconciler struct {
 	TransferImage string
 	// OpenShift enables the conversion SCC and its seccomp profile.
 	OpenShift bool
+	// WithoutRoutes and WithoutKubeVirt are set on clusters that lack these APIs;
+	// the controller then neither watches them nor starts migrations.
+	WithoutRoutes   bool
+	WithoutKubeVirt bool
 	// APIReader reads BMC credentials Secrets, which are not cached.
 	APIReader client.Reader
 	// BMC opens BMC sessions; defaults to Redfish.
@@ -430,6 +434,7 @@ func (r *P2VMigrationReconciler) preflight(ctx context.Context, m *migrationv1al
 		return nil, nil, err
 	}
 	add("GatewayAvailable", cfg.Status.GatewayURL != "", B, "the metal2vm gateway must be available (P2VConfig \"cluster\")")
+	add("KubeVirtAvailable", !r.WithoutKubeVirt, B, "OpenShift Virtualization (KubeVirt) must be installed on this cluster")
 
 	var others migrationv1alpha1.P2VMigrationList
 	if err := r.List(ctx, &others, client.InNamespace(m.Namespace)); err != nil {
@@ -634,18 +639,23 @@ func (r *P2VMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return reqs
 	})
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&migrationv1alpha1.P2VMigration{}).
 		Owns(&corev1.Pod{}).
-		Owns(&corev1.PersistentVolumeClaim{}).
-		Owns(&routev1.Route{}).
-		Watches(&kubevirtv1.VirtualMachine{}, handler.EnqueueRequestsFromMapFunc(
+		Owns(&corev1.PersistentVolumeClaim{})
+	if !r.WithoutRoutes {
+		b = b.Owns(&routev1.Route{})
+	}
+	if !r.WithoutKubeVirt {
+		b = b.Watches(&kubevirtv1.VirtualMachine{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, o client.Object) []reconcile.Request {
 				if name := o.GetLabels()[vmbuilder.LabelMigration]; name != "" {
 					return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: name}}}
 				}
 				return nil
-			})).
+			}))
+	}
+	return b.
 		Watches(&migrationv1alpha1.P2VSource{}, bySource).
 		Named("p2vmigration").
 		Complete(r)

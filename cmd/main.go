@@ -32,7 +32,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	kubevirtv1 "kubevirt.io/api/core/v1"
@@ -222,43 +221,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.P2VSourceReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		APIReader: mgr.GetAPIReader(),
-		BMC:       controller.DefaultBMCConnector,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "p2vsource")
-		os.Exit(1)
-	}
 	transferImage := os.Getenv("RELATED_IMAGE_TRANSFER")
 	if transferImage == "" {
 		setupLog.Error(nil, "RELATED_IMAGE_TRANSFER must be set to the transfer image")
 		os.Exit(1)
 	}
-	// On OpenShift, conversion pods use the metal2vm-conversion SCC.
-	_, sccErr := mgr.GetRESTMapper().RESTMapping(
-		schema.GroupKind{Group: "security.openshift.io", Kind: "SecurityContextConstraints"}, "v1")
-	openShift := sccErr == nil
-	setupLog.Info("platform detected", "openshift", openShift)
-	if err := (&controller.P2VMigrationReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
+	if err := controller.SetupControllers(mgr, controller.Options{
 		Namespace:     operatorNamespace,
 		TransferImage: transferImage,
-		OpenShift:     openShift,
-		APIReader:     mgr.GetAPIReader(),
-		BMC:           controller.DefaultBMCConnector,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "p2vmigration")
-		os.Exit(1)
-	}
-	if err := (&controller.P2VConfigReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		Namespace: operatorNamespace,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "p2vconfig")
+	}); err != nil {
+		setupLog.Error(err, "Failed to create controllers")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

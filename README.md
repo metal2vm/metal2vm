@@ -96,8 +96,10 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Requirements
 
-- OpenShift 4.22+ with OpenShift Virtualization. Kubernetes with KubeVirt + CDI
-  should work, but the console plugin needs OpenShift.
+- OpenShift 4.22+ with OpenShift Virtualization. Plain Kubernetes with KubeVirt
+  is not supported yet, because the gateway is exposed through an OpenShift Route
+  (LoadBalancer/NodePort exposure is planned). The operator still starts there
+  and reports what is missing.
 - A storage class that provides block-mode PVCs for VMs: ODF or any CSI driver
   supported by OpenShift Virtualization.
 - From the physical server: outbound HTTPS (443) to the cluster's ingress. From
@@ -115,8 +117,9 @@ podman.
 git clone https://github.com/metal2vm/metal2vm && cd metal2vm
 hack/openshift-dev-deploy.sh all    # build images on the cluster; deploy the operator and console plugin
 oc apply -k config/scc              # SCC for the conversion pods (virt-v2v's network helper)
-oc apply -f config/samples/migration_v1alpha1_p2vconfig.yaml   # cluster settings ("cluster")
 ```
+
+The operator creates its cluster settings (`P2VConfig` named `cluster`) itself.
 
 Then, in the console: **Virtualization → Physical servers → Add physical
 server**, and **Migrate**.

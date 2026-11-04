@@ -69,7 +69,9 @@ type P2VConfigReconciler struct {
 	Scheme *runtime.Scheme
 	// Namespace is the operator namespace.
 	Namespace string
-	Now       func() time.Time
+	// WithoutRoutes is set on clusters without the OpenShift Route API.
+	WithoutRoutes bool
+	Now           func() time.Time
 }
 
 // +kubebuilder:rbac:groups=migration.metal2vm.io,resources=p2vconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -113,6 +115,11 @@ func (r *P2VConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if exposure != migrationv1alpha1.ExposureRoute {
 		return ctrl.Result{}, r.setAvailable(ctx, &cfg, "", metav1.ConditionFalse, "UnsupportedExposure",
 			fmt.Sprintf("exposure %q is not implemented yet; use Route", exposure))
+	}
+	if r.WithoutRoutes {
+		return ctrl.Result{}, r.setAvailable(ctx, &cfg, "", metav1.ConditionFalse, "RouteAPIUnavailable",
+			"exposure Route needs the OpenShift Route API, which this cluster does not have; "+
+				"other exposures are not implemented yet")
 	}
 	host, err := r.ensureRoute(ctx, &cfg)
 	if err != nil {
@@ -287,10 +294,13 @@ func (r *P2VConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	toSingleton := handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []reconcile.Request {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: migrationv1alpha1.P2VConfigSingletonName}}}
 	})
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&migrationv1alpha1.P2VConfig{}).
-		Owns(&corev1.Service{}).
-		Owns(&routev1.Route{}).
+		Owns(&corev1.Service{})
+	if !r.WithoutRoutes {
+		b = b.Owns(&routev1.Route{})
+	}
+	return b.
 		Watches(&corev1.Secret{}, toSingleton, builder.WithPredicates(predicate.NewPredicateFuncs(func(o client.Object) bool {
 			return o.GetNamespace() == r.Namespace &&
 				(o.GetName() == gateway.CASecretName || o.GetName() == gateway.TLSSecretName)

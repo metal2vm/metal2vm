@@ -34,6 +34,8 @@ import (
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "example.com/metal2vm:v0.0.1"
+	// bootArtifactsImage is a small stand-in for images/boot-artifacts.
+	bootArtifactsImage = "example.com/metal2vm-boot-artifacts:e2e"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -61,6 +63,17 @@ var _ = BeforeSuite(func() {
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+
+	By("building and loading the placeholder boot-artifacts image")
+	containerTool := os.Getenv("CONTAINER_TOOL")
+	if containerTool == "" {
+		containerTool = "docker"
+	}
+	cmd = exec.Command(containerTool, "build", "-t", bootArtifactsImage, "test/e2e/boot-artifacts-stub")
+	_, err = utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the boot-artifacts image")
+	err = utils.LoadImageToKindClusterWithName(bootArtifactsImage)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the boot-artifacts image into Kind")
 
 	configureKubectlKubeRC()
 	setupCertManager()

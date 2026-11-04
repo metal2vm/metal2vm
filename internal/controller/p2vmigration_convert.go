@@ -726,7 +726,7 @@ func (r *P2VMigrationReconciler) reconcileArchive(ctx context.Context, m *migrat
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: names.Transfer(m.Name)}},
 	} {
 		obj.SetNamespace(m.Namespace)
-		if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
+		if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil && !apimeta.IsNoMatchError(err) {
 			return fmt.Errorf("deleting %s: %w", key(obj.GetName()), err)
 		}
 	}

@@ -1,0 +1,6 @@
+# Placeholder boot artifacts for the e2e tests. The operator's init container
+# only copies these files; the gateway opens them per request. The real image
+# (images/boot-artifacts) downloads Fedora CoreOS, which is too large for CI.
+FROM docker.io/library/busybox:1.37
+RUN mkdir -p /boot/pxe && touch /boot/live.iso /boot/live-tools.tar.gz /boot/pxe/.keep
+USER 65532
