@@ -69,7 +69,8 @@ var _ = BeforeSuite(func() {
 	if containerTool == "" {
 		containerTool = "docker"
 	}
-	cmd = exec.Command(containerTool, "build", "-t", bootArtifactsImage, "test/e2e/boot-artifacts-stub")
+	cmd = exec.Command(containerTool, "build", "-t", bootArtifactsImage,
+		"-f", "test/e2e/boot-artifacts-stub/Containerfile", "test/e2e/boot-artifacts-stub")
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the boot-artifacts image")
 	err = utils.LoadImageToKindClusterWithName(bootArtifactsImage)
