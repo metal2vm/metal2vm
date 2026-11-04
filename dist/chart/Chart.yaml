@@ -1,0 +1,21 @@
+apiVersion: v2
+name: metal2vm
+description: metal2vm migrates physical servers to virtual machines on OpenShift Virtualization
+type: application
+
+version: 0.1.0
+appVersion: "v0.1.0"
+
+keywords:
+  - openshift
+  - kubevirt
+  - p2v
+  - migration
+  - operator
+home: https://github.com/metal2vm/metal2vm
+sources:
+  - https://github.com/metal2vm/metal2vm
+icon: https://raw.githubusercontent.com/metal2vm/metal2vm/main/docs/images/metal2vm-icon.svg
+
+annotations:
+  kubebuilder.io/generated-by: kubebuilder

@@ -1,0 +1,5 @@
+# Input of `make bundle`: the CSV base, the OpenShift manifests and the samples.
+resources:
+- bases/metal2vm.clusterserviceversion.yaml
+- ../openshift
+- ../samples

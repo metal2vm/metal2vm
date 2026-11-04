@@ -1,0 +1,2042 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    control-plane: controller-manager
+  name: metal2vm-system
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: p2vconfigs.migration.metal2vm.io
+spec:
+  group: migration.metal2vm.io
+  names:
+    kind: P2VConfig
+    listKind: P2VConfigList
+    plural: p2vconfigs
+    singular: p2vconfig
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.gatewayURL
+      name: Gateway
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: P2VConfig is the cluster-wide metal2vm configuration. It must
+          be named "cluster".
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of P2VConfig
+            properties:
+              agentTokenTTL:
+                default: 24h
+                description: agentTokenTTL is how long a live-environment boot token
+                  stays valid.
+                type: string
+              defaultStorageClassName:
+                description: defaultStorageClassName for copied disks when a migration
+                  does not set one.
+                type: string
+              gateway:
+                properties:
+                  bootMediaHTTP:
+                    description: |-
+                      bootMediaHTTP also serves boot artifacts (ISO, PXE) over plain HTTP,
+                      for BMCs and iPXE that cannot use HTTPS. The boot token then crosses the
+                      network unencrypted: use it on trusted provisioning networks only. The
+                      agent API always stays on HTTPS.
+                    type: boolean
+                  exposure:
+                    default: Route
+                    description: exposure of the agent gateway. Route needs only port
+                      443 on the ingress VIP.
+                    enum:
+                    - Route
+                    - LoadBalancer
+                    - NodePort
+                    type: string
+                  hostname:
+                    description: hostname overrides the generated Route host.
+                    type: string
+                type: object
+              images:
+                description: |-
+                  images overrides component images, e.g. to point at a mirror registry.
+                  Empty fields use the images the operator was released with.
+                properties:
+                  bootArtifacts:
+                    description: bootArtifacts carries the live ISO and PXE artifacts.
+                    type: string
+                  transfer:
+                    description: transfer runs nbdcopy and virt-v2v-in-place (includes
+                      virtio-win).
+                    type: string
+                  virtioWin:
+                    description: virtioWin replaces the virtio-win drivers bundled
+                      in the transfer image.
+                    type: string
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of P2VConfig
+            properties:
+              bootMediaHTTPURL:
+                description: bootMediaHTTPURL serves boot artifacts over plain HTTP
+                  (bootMediaHTTP).
+                type: string
+              conditions:
+                description: 'conditions: Available, Degraded.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              gatewayURL:
+                description: gatewayURL is the URL live agents connect to.
+                type: string
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: P2VConfig must be named 'cluster'
+          rule: self.metadata.name == 'cluster'
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: p2vmigrations.migration.metal2vm.io
+spec:
+  group: migration.metal2vm.io
+  names:
+    kind: P2VMigration
+    listKind: P2VMigrationList
+    plural: p2vmigrations
+    shortNames:
+    - p2vm
+    singular: p2vmigration
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.sourceRef.name
+      name: Source
+      type: string
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.vmName
+      name: VM
+      type: string
+    - jsonPath: .status.guest.osinfo
+      name: Guest
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: P2VMigration migrates one P2VSource to a VirtualMachine.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of P2VMigration
+            properties:
+              archived:
+                description: |-
+                  archived finalizes the migration: rollback is no longer possible and
+                  temporary resources (transfer pod, tokens, boot media) are removed.
+                type: boolean
+              autoShutdownSource:
+                default: true
+                description: autoShutdownSource powers the source off at cutover.
+                type: boolean
+              bootMethod:
+                default: manual
+                description: BootMethod selects how the source is booted into the
+                  live environment.
+                enum:
+                - redfish
+                - pxe
+                - manual
+                type: string
+              cutover:
+                description: |-
+                  cutover, when set and in the past, switches from test boot to production.
+                  Same semantics as Forklift's Migration.spec.cutover.
+                format: date-time
+                type: string
+              disks:
+                description: disks maps each source disk to an action. Disks not listed
+                  are skipped.
+                items:
+                  description: DiskMapping maps one source disk. Like a Forklift StorageMap
+                    entry, per disk.
+                  properties:
+                    action:
+                      description: DiskAction is what to do with a source disk.
+                      enum:
+                      - copy
+                      - attach
+                      - skip
+                      type: string
+                    lun:
+                      description: lun describes how worker nodes reach an existing
+                        SAN LUN for action=attach.
+                      properties:
+                        fc:
+                          properties:
+                            lun:
+                              format: int32
+                              type: integer
+                            targetWWNs:
+                              description: targetWWNs and lun, used when wwids is
+                                empty.
+                              items:
+                                type: string
+                              type: array
+                            wwids:
+                              description: wwids of the LUN (preferred), as seen by
+                                worker nodes.
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        iscsi:
+                          properties:
+                            chapSecretRef:
+                              description: chapSecretRef names a Secret of type kubernetes.io/iscsi-chap.
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            iqn:
+                              type: string
+                            lun:
+                              format: int32
+                              type: integer
+                            portals:
+                              items:
+                                type: string
+                              type: array
+                            targetPortal:
+                              type: string
+                          required:
+                          - iqn
+                          - lun
+                          - targetPortal
+                          type: object
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one of fc or iscsi must be set
+                        rule: has(self.fc) != has(self.iscsi)
+                    sourceDiskID:
+                      description: sourceDiskID matches status.inventory.disks[].id
+                        of the P2VSource.
+                      type: string
+                    storageClassName:
+                      description: storageClassName for action=copy. Empty uses P2VConfig's
+                        default, then the cluster default.
+                      type: string
+                  required:
+                  - action
+                  - sourceDiskID
+                  type: object
+                  x-kubernetes-validations:
+                  - message: lun is required when action is attach
+                    rule: self.action != 'attach' || has(self.lun)
+                  - message: lun is only valid when action is attach
+                    rule: self.action != 'copy' || !has(self.lun)
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceDiskID
+                x-kubernetes-list-type: map
+              mode:
+                default: cold
+                description: MigrationMode selects cold (source offline during copy)
+                  or warm migration.
+                enum:
+                - cold
+                - warm
+                type: string
+              nics:
+                description: nics maps each source NIC to a target network. NICs not
+                  listed are dropped.
+                items:
+                  description: NICMapping maps one source NIC to a target network.
+                  properties:
+                    keepIP:
+                      description: keepIP re-applies the source static IP configuration
+                        inside the guest.
+                      type: boolean
+                    keepMAC:
+                      description: |-
+                        keepMAC gives the VM NIC the source MAC address on multus networks.
+                        On the pod network the source MAC is always kept: it never leaves the
+                        pod, and guests often bind network config to it.
+                      type: boolean
+                    networkName:
+                      description: networkName is a NetworkAttachmentDefinition as
+                        "name" or "namespace/name".
+                      type: string
+                    sourceMAC:
+                      description: sourceMAC matches status.inventory.nics[].mac of
+                        the P2VSource.
+                      type: string
+                    type:
+                      description: NetworkType is the kind of target network. Same
+                        values as Forklift's NetworkMap.
+                      enum:
+                      - pod
+                      - multus
+                      type: string
+                  required:
+                  - sourceMAC
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: networkName is required for multus networks
+                    rule: self.type != 'multus' || has(self.networkName)
+                  - message: keepIP requires a multus (bridged/localnet) network
+                    rule: '!(has(self.keepIP) && self.keepIP) || self.type == ''multus'''
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceMAC
+                x-kubernetes-list-type: map
+              rollback:
+                description: rollback stops the VM and powers the source back on.
+                  Ignored once archived.
+                type: boolean
+              sourceRef:
+                description: sourceRef names a P2VSource in the same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              targetVM:
+                description: |-
+                  targetVM describes the VirtualMachine to create. Everything defaults
+                  from the source inventory.
+                properties:
+                  cpu:
+                    description: cpu topology. Defaults to the source topology.
+                    properties:
+                      cores:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      sockets:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      threads:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  diskBus:
+                    default: virtio
+                    description: diskBus for converted disks. sata is a fallback for
+                      guests virt-v2v cannot convert.
+                    enum:
+                    - virtio
+                    - sata
+                    type: string
+                  firmware:
+                    description: firmware overrides the detected firmware.
+                    properties:
+                      secureBoot:
+                        type: boolean
+                      tpm:
+                        description: tpm adds a persistent vTPM.
+                        type: boolean
+                      type:
+                        description: FirmwareType is the boot firmware of a machine.
+                        enum:
+                        - bios
+                        - uefi
+                        type: string
+                    type: object
+                  memory:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: memory. Defaults to the source memory.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  name:
+                    description: name of the VirtualMachine. Defaults to the P2VSource
+                      name.
+                    maxLength: 63
+                    type: string
+                type: object
+              testBoot:
+                default: true
+                description: |-
+                  testBoot starts the converted VM without production NICs and waits for
+                  cutover, so the admin can verify it first.
+                type: boolean
+            required:
+            - disks
+            - sourceRef
+            type: object
+          status:
+            description: status defines the observed state of P2VMigration
+            properties:
+              agent:
+                description: agent is the live agent connection state.
+                properties:
+                  connected:
+                    type: boolean
+                  lastHeartbeat:
+                    format: date-time
+                    type: string
+                  version:
+                    type: string
+                type: object
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                description: 'conditions: Ready, PreflightPassed, AgentConnected,
+                  Copied, Converted, SourcePoweredOff, VMReady.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              disks:
+                items:
+                  description: DiskStatus is per-disk progress.
+                  properties:
+                    bootOrder:
+                      description: bootOrder from guest conversion; 0 means not bootable.
+                      format: int32
+                      type: integer
+                    bytesCopied:
+                      format: int64
+                      type: integer
+                    bytesTotal:
+                      format: int64
+                      type: integer
+                    phase:
+                      enum:
+                      - Pending
+                      - Copying
+                      - Copied
+                      - Attached
+                      - Skipped
+                      - Failed
+                      type: string
+                    pvcName:
+                      type: string
+                    sourceDiskID:
+                      type: string
+                  required:
+                  - sourceDiskID
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceDiskID
+                x-kubernetes-list-type: map
+              guest:
+                description: guest is what guest conversion found inside the disks.
+                properties:
+                  distro:
+                    description: distro as reported by libguestfs, e.g. rhel, ubuntu,
+                      windows.
+                    type: string
+                  family:
+                    description: family is linux or windows.
+                    enum:
+                    - linux
+                    - windows
+                    - unknown
+                    type: string
+                  firmware:
+                    description: firmware the converted guest needs to boot.
+                    enum:
+                    - bios
+                    - uefi
+                    type: string
+                  networkNotes:
+                    description: networkNotes explains how the guest's network config
+                      was adapted.
+                    items:
+                      type: string
+                    type: array
+                  osinfo:
+                    description: osinfo is the libosinfo short ID, e.g. rhel9.8, win2k22.
+                    type: string
+                  productName:
+                    description: productName, e.g. "Red Hat Enterprise Linux 9.8 (Plow)".
+                    type: string
+                type: object
+              message:
+                description: message is a human-readable summary of the current phase.
+                type: string
+              phase:
+                description: MigrationPhase is the coarse state of a migration.
+                enum:
+                - Pending
+                - Preflight
+                - Booting
+                - Connected
+                - Copying
+                - Converting
+                - ReadyForTest
+                - Testing
+                - CuttingOver
+                - Completed
+                - RollingBack
+                - RolledBack
+                - Failed
+                type: string
+              preflight:
+                description: preflight holds the result of each pre-flight check.
+                items:
+                  properties:
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    passed:
+                      type: boolean
+                    severity:
+                      description: PreflightSeverity tells whether a failed check
+                        blocks the migration.
+                      enum:
+                      - Blocker
+                      - Warning
+                      - Info
+                      type: string
+                  required:
+                  - name
+                  - passed
+                  - severity
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              startedAt:
+                format: date-time
+                type: string
+              vmName:
+                description: vmName is the VirtualMachine created for this migration.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: p2vsources.migration.metal2vm.io
+spec:
+  group: migration.metal2vm.io
+  names:
+    kind: P2VSource
+    listKind: P2VSourceList
+    plural: p2vsources
+    shortNames:
+    - p2vs
+    singular: p2vsource
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.inventory.os.distribution
+      name: OS
+      type: string
+    - jsonPath: .status.inventory.firmware.type
+      name: Firmware
+      type: string
+    - jsonPath: .status.inventory.collectedBy
+      name: Inventory
+      type: string
+    - jsonPath: .status.agent.connected
+      name: Agent
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: P2VSource is a physical server that can be migrated to a VM.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of P2VSource
+            properties:
+              bmc:
+                description: bmc enables remote boot of the live environment and power
+                  control via Redfish.
+                properties:
+                  address:
+                    description: address is the Redfish base URL, e.g. https://10.0.0.10.
+                    pattern: ^https?://
+                    type: string
+                  credentialsSecretRef:
+                    description: |-
+                      credentialsSecretRef names a Secret in the same namespace with keys
+                      "username" and "password".
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  insecureSkipVerify:
+                    description: insecureSkipVerify disables TLS verification of the
+                      BMC certificate.
+                    type: boolean
+                  mediaProtocol:
+                    default: HTTPS
+                    description: |-
+                      mediaProtocol is how the BMC fetches the live ISO. HTTP needs
+                      P2VConfig spec.gateway.bootMediaHTTP.
+                    enum:
+                    - HTTPS
+                    - HTTP
+                    type: string
+                  systemID:
+                    description: systemID selects the Redfish ComputerSystem. Empty
+                      means the only system.
+                    type: string
+                required:
+                - address
+                - credentialsSecretRef
+                type: object
+              osAccess:
+                description: |-
+                  osAccess enables a read-only pre-check of the running OS (inventory and
+                  blockers such as BitLocker) before any downtime is scheduled.
+                properties:
+                  address:
+                    description: address is the hostname or IP of the running OS.
+                    type: string
+                  credentialsSecretRef:
+                    description: |-
+                      credentialsSecretRef names a Secret with "username" and either "password"
+                      or "ssh-privatekey". For WinRM over HTTPS it may also hold "ca.crt".
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  insecureSkipVerify:
+                    description: |-
+                      insecureSkipVerify disables WinRM HTTPS certificate verification
+                      (self-signed WinRM listeners).
+                    type: boolean
+                  port:
+                    description: port defaults to 22 (ssh) or 5986 (winrm).
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  type:
+                    description: OSAccessType is the remote management protocol of
+                      the running OS.
+                    enum:
+                    - ssh
+                    - winrm
+                    type: string
+                required:
+                - address
+                - credentialsSecretRef
+                - type
+                type: object
+              pxe:
+                description: pxe enables network boot of the live environment.
+                properties:
+                  bootMACAddress:
+                    description: bootMACAddress is the MAC address of the NIC that
+                      PXE boots.
+                    pattern: ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$
+                    type: string
+                required:
+                - bootMACAddress
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of P2VSource
+            properties:
+              agent:
+                description: agent is the state of the live agent, when one is running.
+                properties:
+                  connected:
+                    type: boolean
+                  lastHeartbeat:
+                    format: date-time
+                    type: string
+                  version:
+                    type: string
+                type: object
+              bmc:
+                description: bmc is what the last BMC check found.
+                properties:
+                  checkedAt:
+                    format: date-time
+                    type: string
+                  manufacturer:
+                    type: string
+                  model:
+                    type: string
+                  powerState:
+                    description: powerState is On or Off.
+                    type: string
+                  serialNumber:
+                    type: string
+                  virtualMedia:
+                    description: virtualMedia is true when the BMC offers CD/DVD virtual
+                      media.
+                    type: boolean
+                required:
+                - checkedAt
+                type: object
+              bootMedia:
+                description: bootMedia describes the live environment boot media for
+                  this source.
+                properties:
+                  expiresAt:
+                    description: expiresAt is when the boot media and agent token
+                      stop working.
+                    format: date-time
+                    type: string
+                  secretName:
+                    description: |-
+                      secretName is a Secret in the same namespace with keys "isoURL",
+                      "token" and "expiresAt".
+                    type: string
+                required:
+                - expiresAt
+                - secretName
+                type: object
+              conditions:
+                description: 'conditions: BootMediaReady, InventoryCollected, BMCReachable,
+                  OSReachable, Blocked.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              inventory:
+                description: inventory is the most recently discovered hardware and
+                  OS.
+                properties:
+                  collectedAt:
+                    format: date-time
+                    type: string
+                  collectedBy:
+                    description: InventorySource tells who collected an inventory.
+                    enum:
+                    - PreCheck
+                    - LiveAgent
+                    type: string
+                  cpu:
+                    properties:
+                      coresPerSocket:
+                        format: int32
+                        type: integer
+                      model:
+                        type: string
+                      sockets:
+                        format: int32
+                        type: integer
+                      threadsPerCore:
+                        format: int32
+                        type: integer
+                    type: object
+                  disks:
+                    items:
+                      description: Disk is a whole block device on the source server.
+                      properties:
+                        boot:
+                          description: boot is true when the OS boots from this disk.
+                          type: boolean
+                        encrypted:
+                          description: encrypted is true when a BitLocker or LUKS
+                            volume was found on the disk.
+                          type: boolean
+                        id:
+                          description: |-
+                            id is stable across reboots (WWN, serial or /dev/disk/by-id name) and is
+                            used to match pre-check and live-agent inventories.
+                          type: string
+                        model:
+                          type: string
+                        multipath:
+                          description: multipath is true when the disk is reachable
+                            over several paths.
+                          type: boolean
+                        path:
+                          description: path is the kernel device path seen by the
+                            collector, e.g. /dev/sda.
+                          type: string
+                        serial:
+                          type: string
+                        sizeBytes:
+                          format: int64
+                          type: integer
+                        transport:
+                          description: DiskTransport is how a disk is attached to
+                            the source server.
+                          enum:
+                          - sata
+                          - sas
+                          - nvme
+                          - scsi
+                          - fc
+                          - iscsi
+                          - usb
+                          - virtio
+                          - unknown
+                          type: string
+                        wwn:
+                          type: string
+                      required:
+                      - id
+                      - sizeBytes
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - id
+                    x-kubernetes-list-type: map
+                  firmware:
+                    properties:
+                      secureBoot:
+                        type: boolean
+                      tpm:
+                        description: tpm is true when a TPM 2.0 device is present.
+                        type: boolean
+                      type:
+                        description: FirmwareType is the boot firmware of a machine.
+                        enum:
+                        - bios
+                        - uefi
+                        type: string
+                    type: object
+                  memoryMiB:
+                    format: int64
+                    type: integer
+                  nics:
+                    items:
+                      description: NIC is a physical network interface and its OS-level
+                        IP configuration.
+                      properties:
+                        dhcp:
+                          description: dhcp is true when the address was obtained
+                            via DHCP.
+                          type: boolean
+                        dnsServers:
+                          items:
+                            type: string
+                          type: array
+                        gateway:
+                          type: string
+                        ipAddresses:
+                          description: ipAddresses in CIDR notation.
+                          items:
+                            type: string
+                          type: array
+                        linkSpeedMbps:
+                          format: int32
+                          type: integer
+                        mac:
+                          type: string
+                        name:
+                          type: string
+                        vlanID:
+                          description: vlanID is set for tagged sub-interfaces.
+                          format: int32
+                          type: integer
+                      required:
+                      - mac
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - mac
+                    x-kubernetes-list-type: map
+                  os:
+                    properties:
+                      distribution:
+                        description: distribution, e.g. "rhel", "ubuntu", "sles",
+                          "windows-server".
+                        type: string
+                      family:
+                        description: OSFamily is the broad operating system family.
+                        enum:
+                        - linux
+                        - windows
+                        - unknown
+                        type: string
+                      hostname:
+                        type: string
+                      version:
+                        type: string
+                    type: object
+                  warnings:
+                    description: warnings are human-readable migration risks (e.g.
+                      "BitLocker enabled on C:").
+                    items:
+                      type: string
+                    type: array
+                required:
+                - collectedAt
+                - collectedBy
+                type: object
+              osConfig:
+                description: |-
+                  osConfig is what the OS pre-check found on the running source OS
+                  (spec.osAccess). The live agent never overwrites it.
+                properties:
+                  collectedAt:
+                    format: date-time
+                    type: string
+                  hostKeyFingerprint:
+                    description: |-
+                      hostKeyFingerprint is the SSH host key (SHA256) trusted on first use;
+                      later pre-checks must present the same key.
+                    type: string
+                  nics:
+                    description: nics as configured in the installed OS. name is the
+                      OS interface name.
+                    items:
+                      description: NIC is a physical network interface and its OS-level
+                        IP configuration.
+                      properties:
+                        dhcp:
+                          description: dhcp is true when the address was obtained
+                            via DHCP.
+                          type: boolean
+                        dnsServers:
+                          items:
+                            type: string
+                          type: array
+                        gateway:
+                          type: string
+                        ipAddresses:
+                          description: ipAddresses in CIDR notation.
+                          items:
+                            type: string
+                          type: array
+                        linkSpeedMbps:
+                          format: int32
+                          type: integer
+                        mac:
+                          type: string
+                        name:
+                          type: string
+                        vlanID:
+                          description: vlanID is set for tagged sub-interfaces.
+                          format: int32
+                          type: integer
+                      required:
+                      - mac
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - mac
+                    x-kubernetes-list-type: map
+                  os:
+                    properties:
+                      distribution:
+                        description: distribution, e.g. "rhel", "ubuntu", "sles",
+                          "windows-server".
+                        type: string
+                      family:
+                        description: OSFamily is the broad operating system family.
+                        enum:
+                        - linux
+                        - windows
+                        - unknown
+                        type: string
+                      hostname:
+                        type: string
+                      version:
+                        type: string
+                    type: object
+                  warnings:
+                    description: warnings are migration risks found in the OS (e.g.
+                      BitLocker).
+                    items:
+                      type: string
+                    type: array
+                required:
+                - collectedAt
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-controller-manager
+  namespace: metal2vm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-leader-election-role
+  namespace: metal2vm-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-conversion-scc
+rules:
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - metal2vm-conversion
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metal2vm-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  - pods
+  - secrets
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cdi.kubevirt.io
+  resources:
+  - storageprofiles
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - console.openshift.io
+  resources:
+  - consoleplugins
+  verbs:
+  - create
+- apiGroups:
+  - console.openshift.io
+  resourceNames:
+  - metal2vm-console-plugin
+  resources:
+  - consoleplugins
+  verbs:
+  - delete
+  - get
+  - patch
+  - update
+- apiGroups:
+  - k8s.cni.cncf.io
+  resources:
+  - network-attachment-definitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachineinstances
+  verbs:
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachines
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachines/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs
+  - p2vmigrations
+  - p2vsources
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs/finalizers
+  - p2vmigrations/finalizers
+  - p2vsources/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs/status
+  - p2vmigrations/status
+  - p2vsources/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - operator.openshift.io
+  resourceNames:
+  - cluster
+  resources:
+  - consoles
+  verbs:
+  - get
+  - patch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - metal2vm-conversion-scc
+  resources:
+  - clusterroles
+  verbs:
+  - get
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes/custom-host
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - create
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - metal2vm-conversion
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - delete
+  - get
+  - patch
+  - update
+  - use
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - storageclasses
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metal2vm-metrics-auth-role
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metal2vm-metrics-reader
+rules:
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-p2vconfig-admin-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs
+  verbs:
+  - '*'
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-p2vconfig-editor-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  name: metal2vm-p2vconfig-viewer-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vconfigs/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+  name: metal2vm-p2vmigration-admin-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vmigrations
+  verbs:
+  - '*'
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vmigrations/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+  name: metal2vm-p2vmigration-editor-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vmigrations
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vmigrations/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  name: metal2vm-p2vmigration-viewer-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vmigrations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vmigrations/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+  name: metal2vm-p2vsource-admin-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources
+  verbs:
+  - '*'
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+  name: metal2vm-p2vsource-editor-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  name: metal2vm-p2vsource-viewer-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources/status
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-leader-election-rolebinding
+  namespace: metal2vm-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metal2vm-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: metal2vm-controller-manager
+  namespace: metal2vm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+  name: metal2vm-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: metal2vm-manager-role
+subjects:
+- kind: ServiceAccount
+  name: metal2vm-controller-manager
+  namespace: metal2vm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metal2vm-metrics-auth-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: metal2vm-metrics-auth-role
+subjects:
+- kind: ServiceAccount
+  name: metal2vm-controller-manager
+  namespace: metal2vm-system
+---
+apiVersion: v1
+data:
+  nginx.conf: |
+    error_log /dev/stdout info;
+    events {}
+    http {
+      access_log /dev/stdout;
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      keepalive_timeout 65;
+      server {
+        listen 9443 ssl;
+        listen [::]:9443 ssl;
+        ssl_certificate /var/cert/tls.crt;
+        ssl_certificate_key /var/cert/tls.key;
+        root /usr/share/nginx/html;
+      }
+    }
+kind: ConfigMap
+metadata:
+  labels:
+    app: metal2vm-console-plugin
+    app.kubernetes.io/part-of: metal2vm
+  name: metal2vm-console-plugin
+  namespace: metal2vm-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: metal2vm-console-plugin-cert
+  labels:
+    app: metal2vm-console-plugin
+    app.kubernetes.io/part-of: metal2vm
+  name: metal2vm-console-plugin
+  namespace: metal2vm-system
+spec:
+  ports:
+  - name: https
+    port: 9443
+    protocol: TCP
+    targetPort: 9443
+  selector:
+    app: metal2vm-console-plugin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    control-plane: controller-manager
+  name: metal2vm-controller-manager-metrics-service
+  namespace: metal2vm-system
+spec:
+  ports:
+  - name: https
+    port: 8443
+    protocol: TCP
+    targetPort: 8443
+  selector:
+    app.kubernetes.io/name: metal2vm
+    control-plane: controller-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: metal2vm-console-plugin
+    app.kubernetes.io/part-of: metal2vm
+  name: metal2vm-console-plugin
+  namespace: metal2vm-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metal2vm-console-plugin
+  template:
+    metadata:
+      labels:
+        app: metal2vm-console-plugin
+    spec:
+      containers:
+      - image: ghcr.io/metal2vm/metal2vm-console-plugin:v0.1.0
+        name: plugin
+        ports:
+        - containerPort: 9443
+          protocol: TCP
+        resources:
+          limits:
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 50Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /var/cert
+          name: cert
+          readOnly: true
+        - mountPath: /etc/nginx/nginx.conf
+          name: nginx-conf
+          readOnly: true
+          subPath: nginx.conf
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: metal2vm-console-plugin-cert
+      - configMap:
+          defaultMode: 420
+          name: metal2vm-console-plugin
+        name: nginx-conf
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    control-plane: controller-manager
+  name: metal2vm-controller-manager
+  namespace: metal2vm-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metal2vm
+      control-plane: controller-manager
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        app.kubernetes.io/name: metal2vm
+        control-plane: controller-manager
+    spec:
+      containers:
+      - args:
+        - --metrics-bind-address=:8443
+        - --leader-elect
+        - --health-probe-bind-address=:8081
+        - --live-iso=/var/lib/metal2vm/boot/live.iso
+        - --live-tools=/var/lib/metal2vm/boot/live-tools.tar.gz
+        - --pxe-dir=/var/lib/metal2vm/boot/pxe
+        - --agent-binary=/metal2vm-agent
+        command:
+        - /manager
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: RELATED_IMAGE_TRANSFER
+          value: ghcr.io/metal2vm/metal2vm-transfer:v0.1.0
+        image: ghcr.io/metal2vm/metal2vm-operator:v0.1.0
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        name: manager
+        ports:
+        - containerPort: 8081
+          name: health
+          protocol: TCP
+        - containerPort: 9444
+          name: gateway
+          protocol: TCP
+        - containerPort: 9445
+          name: boot-http
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "1"
+            memory: 256Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /var/lib/metal2vm/boot
+          name: boot
+          readOnly: true
+      initContainers:
+      - command:
+        - cp
+        - -R
+        - /boot/live.iso
+        - /boot/live-tools.tar.gz
+        - /boot/pxe
+        - /var/lib/metal2vm/boot/
+        image: ghcr.io/metal2vm/metal2vm-boot-artifacts:v0.1.0
+        name: boot-artifacts
+        resources:
+          limits:
+            cpu: 500m
+            memory: 64Mi
+          requests:
+            cpu: 10m
+            memory: 16Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - mountPath: /var/lib/metal2vm/boot
+          name: boot
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: metal2vm-controller-manager
+      terminationGracePeriodSeconds: 10
+      volumes:
+      - emptyDir:
+          sizeLimit: 4Gi
+        name: boot

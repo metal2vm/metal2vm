@@ -29,6 +29,10 @@ type Options struct {
 	Namespace string
 	// TransferImage runs transfer and conversion pods.
 	TransferImage string
+	// ConsolePlugin registers the console plugin when the cluster has the
+	// OpenShift console; EnableConsolePlugin also switches it on.
+	ConsolePlugin       bool
+	EnableConsolePlugin bool
 }
 
 // SetupControllers registers the metal2vm controllers with mgr.
@@ -43,7 +47,22 @@ func SetupControllers(mgr ctrl.Manager, o Options) error {
 	openShift := has("security.openshift.io", "SecurityContextConstraints")
 	routes := has("route.openshift.io", "Route")
 	kubeVirt := has("kubevirt.io", "VirtualMachine")
-	ctrl.Log.WithName("setup").Info("Detected platform", "openshift", openShift, "routes", routes, "kubevirt", kubeVirt)
+	console := has("console.openshift.io", "ConsolePlugin")
+	ctrl.Log.WithName("setup").Info("Detected platform", "openshift", openShift, "routes", routes,
+		"kubevirt", kubeVirt, "console", console)
+
+	if openShift || (console && o.ConsolePlugin) {
+		if err := mgr.Add(&PlatformSetup{
+			Client:              mgr.GetClient(),
+			Reader:              mgr.GetAPIReader(),
+			Namespace:           o.Namespace,
+			SCC:                 openShift,
+			ConsolePlugin:       console && o.ConsolePlugin,
+			EnableConsolePlugin: o.EnableConsolePlugin,
+		}); err != nil {
+			return fmt.Errorf("platform setup: %w", err)
+		}
+	}
 
 	if err := (&P2VSourceReconciler{
 		Client:    mgr.GetClient(),

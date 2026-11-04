@@ -98,7 +98,7 @@ spec:
         # Image of per-migration transfer pods. OLM's RELATED_IMAGE_ convention
         # lets oc-mirror find it for disconnected clusters.
         - name: RELATED_IMAGE_TRANSFER
-          value: transfer:latest
+          value: ghcr.io/metal2vm/metal2vm-transfer:v0.1.0
         ports:
         - containerPort: 8081
           name: health

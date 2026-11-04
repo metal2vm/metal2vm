@@ -6,6 +6,10 @@ cliVersion: 4.16.0
 domain: metal2vm.io
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  helm.kubebuilder.io/v2-alpha:
+    manifests: dist/install.yaml
+    output: dist
 projectName: metal2vm
 repo: github.com/metal2vm/metal2vm
 resources:

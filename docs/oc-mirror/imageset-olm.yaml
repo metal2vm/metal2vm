@@ -1,0 +1,15 @@
+# oc-mirror v2: mirror the metal2vm operator catalog for an OperatorHub install.
+# oc-mirror follows the bundle's relatedImages (operator, transfer,
+# boot-artifacts, console plugin) and writes the CatalogSource and the
+# ImageDigestMirrorSet/ImageTagMirrorSet to apply on the cluster.
+#
+#   oc mirror -c imageset-olm.yaml file:///path/to/archive --v2              # connected side
+#   oc mirror -c imageset-olm.yaml --from file:///path/to/archive \
+#     docker://mirror.example.com:8443 --v2                                  # disconnected side
+apiVersion: mirror.openshift.io/v2alpha1
+kind: ImageSetConfiguration
+mirror:
+  operators:
+  - catalog: ghcr.io/metal2vm/metal2vm-operator-catalog:v0.1.0
+    packages:
+    - name: metal2vm

@@ -1,0 +1,16 @@
+# Lets the per-namespace "metal2vm-conversion" ServiceAccount (bound by the
+# operator) use the metal2vm-conversion SCC, which the operator creates on
+# OpenShift. The operator also makes this ClusterRole the owner of the SCC and
+# the ConsolePlugin, so uninstalling metal2vm removes them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: conversion-scc
+  labels:
+    app.kubernetes.io/name: metal2vm
+    app.kubernetes.io/managed-by: kustomize
+rules:
+- apiGroups: ["security.openshift.io"]
+  resources: ["securitycontextconstraints"]
+  resourceNames: ["metal2vm-conversion"]
+  verbs: ["use"]

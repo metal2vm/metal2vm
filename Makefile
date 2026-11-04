@@ -1,5 +1,13 @@
-# Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+# Release version and images. `make set-version VERSION=x.y.z` updates the
+# defaults in config/, the CSV base and the Helm chart.
+VERSION ?= 0.1.0
+IMAGE_TAG_BASE ?= ghcr.io/metal2vm
+IMG ?= $(IMAGE_TAG_BASE)/metal2vm-operator:v$(VERSION)
+TRANSFER_IMG ?= $(IMAGE_TAG_BASE)/metal2vm-transfer:v$(VERSION)
+BOOT_ARTIFACTS_IMG ?= $(IMAGE_TAG_BASE)/metal2vm-boot-artifacts:v$(VERSION)
+PLUGIN_IMG ?= $(IMAGE_TAG_BASE)/metal2vm-console-plugin:v$(VERSION)
+BUNDLE_IMG ?= $(IMAGE_TAG_BASE)/metal2vm-operator-bundle:v$(VERSION)
+CATALOG_IMG ?= $(IMAGE_TAG_BASE)/metal2vm-operator-catalog:v$(VERSION)
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -147,10 +155,10 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	rm Dockerfile.cross
 
 .PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
+build-installer: manifests generate kustomize ## Generate dist/install.yaml (operator + console plugin, for OpenShift).
 	mkdir -p dist
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	"$(KUSTOMIZE)" build config/openshift > dist/install.yaml
 
 ##@ Console plugin
 
@@ -288,3 +296,120 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Packaging (OLM bundle and catalog, Helm chart, release)
+
+OPERATOR_SDK_VERSION ?= v1.42.3
+OPM_VERSION ?= v1.74.0
+HELM_VERSION ?= v4.3.1
+KUBEBUILDER_VERSION ?= v4.16.0
+OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
+OPM ?= $(LOCALBIN)/opm
+HELM ?= $(LOCALBIN)/helm
+KUBEBUILDER ?= $(LOCALBIN)/kubebuilder
+TOOLS_OS = $(shell go env GOOS)
+TOOLS_ARCH = $(shell go env GOARCH)
+
+# download-tool downloads $2 to $1 (versioned by $3) unless present.
+define download-tool
+@[ -f "$(1)-$(3)" ] || { set -e; echo "Downloading $(2)"; curl -sSLf -o "$(1)-$(3)" "$(2)"; chmod +x "$(1)-$(3)"; }; \
+ln -sf "$$(realpath "$(1)-$(3)")" "$(1)"
+endef
+
+.PHONY: operator-sdk opm helm kubebuilder
+operator-sdk: $(LOCALBIN) ## Download operator-sdk locally if necessary.
+	$(call download-tool,$(OPERATOR_SDK),https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(TOOLS_OS)_$(TOOLS_ARCH),$(OPERATOR_SDK_VERSION))
+opm: $(LOCALBIN) ## Download opm locally if necessary.
+	$(call download-tool,$(OPM),https://github.com/operator-framework/operator-registry/releases/download/$(OPM_VERSION)/$(TOOLS_OS)-$(TOOLS_ARCH)-opm,$(OPM_VERSION))
+helm: $(LOCALBIN) ## Download helm locally if necessary.
+	@[ -f "$(HELM)-$(HELM_VERSION)" ] || { set -e; echo "Downloading helm $(HELM_VERSION)"; \
+	  curl -sSLf https://get.helm.sh/helm-$(HELM_VERSION)-$(TOOLS_OS)-$(TOOLS_ARCH).tar.gz | tar -xzO $(TOOLS_OS)-$(TOOLS_ARCH)/helm > "$(HELM)-$(HELM_VERSION)"; \
+	  chmod +x "$(HELM)-$(HELM_VERSION)"; }; ln -sf "$$(realpath "$(HELM)-$(HELM_VERSION)")" "$(HELM)"
+kubebuilder: $(LOCALBIN) ## Download kubebuilder locally if necessary.
+	$(call go-install-tool,$(KUBEBUILDER),sigs.k8s.io/kubebuilder/v4,$(KUBEBUILDER_VERSION))
+
+BUNDLE_CHANNELS ?= --channels=alpha
+BUNDLE_DEFAULT_CHANNEL ?= --default-channel=alpha
+BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
+
+.PHONY: bundle
+bundle: manifests kustomize operator-sdk ## Generate the OLM bundle (bundle/) and validate it.
+	$(OPERATOR_SDK) generate kustomize manifests -q --interactive=false --package metal2vm
+	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle -q --overwrite --package metal2vm \
+		--version $(VERSION) $(BUNDLE_METADATA_OPTS)
+	go run ./hack/csv-related-images bundle/manifests/metal2vm.clusterserviceversion.yaml
+	@# createdAt changes on every run; dropping it keeps bundle/ and catalog/ reproducible.
+	sed -i '/^    createdAt: /d' bundle/manifests/metal2vm.clusterserviceversion.yaml
+	@# OLM reads bundle files as another user: they must be world-readable.
+	chmod -R a+rX bundle
+	$(OPERATOR_SDK) bundle validate ./bundle --select-optional suite=operatorframework
+
+.PHONY: catalog
+catalog: bundle opm ## Generate the file-based OLM catalog (catalog/) for BUNDLE_IMG.
+	rm -rf catalog && mkdir -p catalog/metal2vm
+	$(OPM) init metal2vm --default-channel=alpha --icon=docs/images/metal2vm-icon.svg --output yaml \
+		> catalog/metal2vm/catalog.yaml
+	$(OPM) render ./bundle --output yaml | sed 's#image: ""#image: $(BUNDLE_IMG)#' >> catalog/metal2vm/catalog.yaml
+	printf -- '---\nschema: olm.channel\npackage: metal2vm\nname: alpha\nentries:\n- name: metal2vm.v$(VERSION)\n  skipRange: "<$(VERSION)"\n' \
+		>> catalog/metal2vm/catalog.yaml
+	$(OPM) validate catalog
+	@[ -f catalog.Dockerfile ] || $(OPM) generate dockerfile catalog --base-image=quay.io/operator-framework/opm:$(OPM_VERSION)
+
+.PHONY: bundle-build catalog-build
+bundle-build: ## Build the bundle image.
+	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+catalog-build: ## Build the catalog image.
+	$(CONTAINER_TOOL) build -f catalog.Dockerfile -t $(CATALOG_IMG) .
+
+##@ Helm Deployment
+
+## Helm binary to use for deploying the chart
+HELM ?= helm
+## Namespace to deploy the Helm release
+HELM_NAMESPACE ?= metal2vm-system
+## Name of the Helm release
+HELM_RELEASE ?= metal2vm
+## Path to the Helm chart directory
+HELM_CHART_DIR ?= dist/chart
+## Additional arguments to pass to helm commands
+HELM_EXTRA_ARGS ?=
+
+.PHONY: install-helm
+install-helm: helm ## Download the pinned Helm version (bin/helm).
+
+.PHONY: helm-deploy
+helm-deploy: install-helm ## Deploy manager to the K8s cluster via Helm. Specify an image with IMG.
+	IMG="$(IMG)"; $(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--create-namespace \
+		--set manager.image.repository=$${IMG%:*} \
+		--set manager.image.tag=$${IMG##*:} \
+		--wait \
+		--timeout 5m \
+		$(HELM_EXTRA_ARGS)
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall the Helm release from the K8s cluster.
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-status
+helm-status: ## Show Helm release status.
+	$(HELM) status $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-history
+helm-history: ## Show Helm release history.
+	$(HELM) history $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-rollback
+helm-rollback: ## Rollback to previous Helm release.
+	$(HELM) rollback $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: set-version
+set-version: ## Set the release version everywhere and regenerate: make set-version VERSION=x.y.z
+	@old=$$(sed -n 's/^VERSION ?= //p' Makefile); [ -n "$$old" ] && [ "$$old" != "$(VERSION)" ] || { echo "VERSION must differ from $$old"; exit 1; }; \
+	sed -i "s/^VERSION ?= .*/VERSION ?= $(VERSION)/" Makefile; \
+	for f in config/manager/kustomization.yaml config/manager/manager.yaml config/console-plugin/kustomization.yaml \
+	  config/manifests/bases/metal2vm.clusterserviceversion.yaml dist/chart/values.yaml; do \
+	  sed -i "s/:v$$old/:v$(VERSION)/g; s/newTag: v$$old/newTag: v$(VERSION)/; s/tag: \"v$$old\"/tag: \"v$(VERSION)\"/" $$f; done; \
+	sed -i "s/^version: .*/version: $(VERSION)/; s/^appVersion: .*/appVersion: \"v$(VERSION)\"/" dist/chart/Chart.yaml
+	$(MAKE) catalog build-installer VERSION=$(VERSION)

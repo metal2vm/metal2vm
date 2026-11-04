@@ -1,0 +1,530 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  creationTimestamp: null
+  name: p2vmigrations.migration.metal2vm.io
+spec:
+  group: migration.metal2vm.io
+  names:
+    kind: P2VMigration
+    listKind: P2VMigrationList
+    plural: p2vmigrations
+    shortNames:
+    - p2vm
+    singular: p2vmigration
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.sourceRef.name
+      name: Source
+      type: string
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.vmName
+      name: VM
+      type: string
+    - jsonPath: .status.guest.osinfo
+      name: Guest
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: P2VMigration migrates one P2VSource to a VirtualMachine.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of P2VMigration
+            properties:
+              archived:
+                description: |-
+                  archived finalizes the migration: rollback is no longer possible and
+                  temporary resources (transfer pod, tokens, boot media) are removed.
+                type: boolean
+              autoShutdownSource:
+                default: true
+                description: autoShutdownSource powers the source off at cutover.
+                type: boolean
+              bootMethod:
+                default: manual
+                description: BootMethod selects how the source is booted into the
+                  live environment.
+                enum:
+                - redfish
+                - pxe
+                - manual
+                type: string
+              cutover:
+                description: |-
+                  cutover, when set and in the past, switches from test boot to production.
+                  Same semantics as Forklift's Migration.spec.cutover.
+                format: date-time
+                type: string
+              disks:
+                description: disks maps each source disk to an action. Disks not listed
+                  are skipped.
+                items:
+                  description: DiskMapping maps one source disk. Like a Forklift StorageMap
+                    entry, per disk.
+                  properties:
+                    action:
+                      description: DiskAction is what to do with a source disk.
+                      enum:
+                      - copy
+                      - attach
+                      - skip
+                      type: string
+                    lun:
+                      description: lun describes how worker nodes reach an existing
+                        SAN LUN for action=attach.
+                      properties:
+                        fc:
+                          properties:
+                            lun:
+                              format: int32
+                              type: integer
+                            targetWWNs:
+                              description: targetWWNs and lun, used when wwids is
+                                empty.
+                              items:
+                                type: string
+                              type: array
+                            wwids:
+                              description: wwids of the LUN (preferred), as seen by
+                                worker nodes.
+                              items:
+                                type: string
+                              type: array
+                          type: object
+                        iscsi:
+                          properties:
+                            chapSecretRef:
+                              description: chapSecretRef names a Secret of type kubernetes.io/iscsi-chap.
+                              properties:
+                                name:
+                                  default: ""
+                                  description: |-
+                                    Name of the referent.
+                                    This field is effectively required, but due to backwards compatibility is
+                                    allowed to be empty. Instances of this type with an empty value here are
+                                    almost certainly wrong.
+                                    More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                  type: string
+                              type: object
+                              x-kubernetes-map-type: atomic
+                            iqn:
+                              type: string
+                            lun:
+                              format: int32
+                              type: integer
+                            portals:
+                              items:
+                                type: string
+                              type: array
+                            targetPortal:
+                              type: string
+                          required:
+                          - iqn
+                          - lun
+                          - targetPortal
+                          type: object
+                      type: object
+                      x-kubernetes-validations:
+                      - message: exactly one of fc or iscsi must be set
+                        rule: has(self.fc) != has(self.iscsi)
+                    sourceDiskID:
+                      description: sourceDiskID matches status.inventory.disks[].id
+                        of the P2VSource.
+                      type: string
+                    storageClassName:
+                      description: storageClassName for action=copy. Empty uses P2VConfig's
+                        default, then the cluster default.
+                      type: string
+                  required:
+                  - action
+                  - sourceDiskID
+                  type: object
+                  x-kubernetes-validations:
+                  - message: lun is required when action is attach
+                    rule: self.action != 'attach' || has(self.lun)
+                  - message: lun is only valid when action is attach
+                    rule: self.action != 'copy' || !has(self.lun)
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceDiskID
+                x-kubernetes-list-type: map
+              mode:
+                default: cold
+                description: MigrationMode selects cold (source offline during copy)
+                  or warm migration.
+                enum:
+                - cold
+                - warm
+                type: string
+              nics:
+                description: nics maps each source NIC to a target network. NICs not
+                  listed are dropped.
+                items:
+                  description: NICMapping maps one source NIC to a target network.
+                  properties:
+                    keepIP:
+                      description: keepIP re-applies the source static IP configuration
+                        inside the guest.
+                      type: boolean
+                    keepMAC:
+                      description: |-
+                        keepMAC gives the VM NIC the source MAC address on multus networks.
+                        On the pod network the source MAC is always kept: it never leaves the
+                        pod, and guests often bind network config to it.
+                      type: boolean
+                    networkName:
+                      description: networkName is a NetworkAttachmentDefinition as
+                        "name" or "namespace/name".
+                      type: string
+                    sourceMAC:
+                      description: sourceMAC matches status.inventory.nics[].mac of
+                        the P2VSource.
+                      type: string
+                    type:
+                      description: NetworkType is the kind of target network. Same
+                        values as Forklift's NetworkMap.
+                      enum:
+                      - pod
+                      - multus
+                      type: string
+                  required:
+                  - sourceMAC
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: networkName is required for multus networks
+                    rule: self.type != 'multus' || has(self.networkName)
+                  - message: keepIP requires a multus (bridged/localnet) network
+                    rule: '!(has(self.keepIP) && self.keepIP) || self.type == ''multus'''
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceMAC
+                x-kubernetes-list-type: map
+              rollback:
+                description: rollback stops the VM and powers the source back on.
+                  Ignored once archived.
+                type: boolean
+              sourceRef:
+                description: sourceRef names a P2VSource in the same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              targetVM:
+                description: |-
+                  targetVM describes the VirtualMachine to create. Everything defaults
+                  from the source inventory.
+                properties:
+                  cpu:
+                    description: cpu topology. Defaults to the source topology.
+                    properties:
+                      cores:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      sockets:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      threads:
+                        format: int32
+                        minimum: 1
+                        type: integer
+                    type: object
+                  diskBus:
+                    default: virtio
+                    description: diskBus for converted disks. sata is a fallback for
+                      guests virt-v2v cannot convert.
+                    enum:
+                    - virtio
+                    - sata
+                    type: string
+                  firmware:
+                    description: firmware overrides the detected firmware.
+                    properties:
+                      secureBoot:
+                        type: boolean
+                      tpm:
+                        description: tpm adds a persistent vTPM.
+                        type: boolean
+                      type:
+                        description: FirmwareType is the boot firmware of a machine.
+                        enum:
+                        - bios
+                        - uefi
+                        type: string
+                    type: object
+                  memory:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: memory. Defaults to the source memory.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                  name:
+                    description: name of the VirtualMachine. Defaults to the P2VSource
+                      name.
+                    maxLength: 63
+                    type: string
+                type: object
+              testBoot:
+                default: true
+                description: |-
+                  testBoot starts the converted VM without production NICs and waits for
+                  cutover, so the admin can verify it first.
+                type: boolean
+            required:
+            - disks
+            - sourceRef
+            type: object
+          status:
+            description: status defines the observed state of P2VMigration
+            properties:
+              agent:
+                description: agent is the live agent connection state.
+                properties:
+                  connected:
+                    type: boolean
+                  lastHeartbeat:
+                    format: date-time
+                    type: string
+                  version:
+                    type: string
+                type: object
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                description: 'conditions: Ready, PreflightPassed, AgentConnected,
+                  Copied, Converted, SourcePoweredOff, VMReady.'
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              disks:
+                items:
+                  description: DiskStatus is per-disk progress.
+                  properties:
+                    bootOrder:
+                      description: bootOrder from guest conversion; 0 means not bootable.
+                      format: int32
+                      type: integer
+                    bytesCopied:
+                      format: int64
+                      type: integer
+                    bytesTotal:
+                      format: int64
+                      type: integer
+                    phase:
+                      enum:
+                      - Pending
+                      - Copying
+                      - Copied
+                      - Attached
+                      - Skipped
+                      - Failed
+                      type: string
+                    pvcName:
+                      type: string
+                    sourceDiskID:
+                      type: string
+                  required:
+                  - sourceDiskID
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - sourceDiskID
+                x-kubernetes-list-type: map
+              guest:
+                description: guest is what guest conversion found inside the disks.
+                properties:
+                  distro:
+                    description: distro as reported by libguestfs, e.g. rhel, ubuntu,
+                      windows.
+                    type: string
+                  family:
+                    description: family is linux or windows.
+                    enum:
+                    - linux
+                    - windows
+                    - unknown
+                    type: string
+                  firmware:
+                    description: firmware the converted guest needs to boot.
+                    enum:
+                    - bios
+                    - uefi
+                    type: string
+                  networkNotes:
+                    description: networkNotes explains how the guest's network config
+                      was adapted.
+                    items:
+                      type: string
+                    type: array
+                  osinfo:
+                    description: osinfo is the libosinfo short ID, e.g. rhel9.8, win2k22.
+                    type: string
+                  productName:
+                    description: productName, e.g. "Red Hat Enterprise Linux 9.8 (Plow)".
+                    type: string
+                type: object
+              message:
+                description: message is a human-readable summary of the current phase.
+                type: string
+              phase:
+                description: MigrationPhase is the coarse state of a migration.
+                enum:
+                - Pending
+                - Preflight
+                - Booting
+                - Connected
+                - Copying
+                - Converting
+                - ReadyForTest
+                - Testing
+                - CuttingOver
+                - Completed
+                - RollingBack
+                - RolledBack
+                - Failed
+                type: string
+              preflight:
+                description: preflight holds the result of each pre-flight check.
+                items:
+                  properties:
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    passed:
+                      type: boolean
+                    severity:
+                      description: PreflightSeverity tells whether a failed check
+                        blocks the migration.
+                      enum:
+                      - Blocker
+                      - Warning
+                      - Info
+                      type: string
+                  required:
+                  - name
+                  - passed
+                  - severity
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              startedAt:
+                format: date-time
+                type: string
+              vmName:
+                description: vmName is the VirtualMachine created for this migration.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null

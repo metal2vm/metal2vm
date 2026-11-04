@@ -109,6 +109,7 @@ type P2VConfigStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // P2VConfig is the cluster-wide metal2vm configuration. It must be named "cluster".
+// +operator-sdk:csv:customresourcedefinitions:displayName="metal2vm Settings"
 type P2VConfig struct {
 	metav1.TypeMeta `json:",inline"`
 

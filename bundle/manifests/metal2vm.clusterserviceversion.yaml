@@ -1,0 +1,632 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "migration.metal2vm.io/v1alpha1",
+          "kind": "P2VConfig",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "metal2vm"
+            },
+            "name": "cluster"
+          },
+          "spec": {
+            "agentTokenTTL": "24h",
+            "gateway": {
+              "exposure": "Route"
+            }
+          }
+        },
+        {
+          "apiVersion": "migration.metal2vm.io/v1alpha1",
+          "kind": "P2VMigration",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "metal2vm"
+            },
+            "name": "web01"
+          },
+          "spec": {
+            "autoShutdownSource": true,
+            "bootMethod": "redfish",
+            "disks": [
+              {
+                "action": "copy",
+                "sourceDiskID": "wwn-0x5000c500a1b2c3d4",
+                "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization"
+              },
+              {
+                "action": "attach",
+                "lun": {
+                  "iscsi": {
+                    "iqn": "iqn.1992-08.com.netapp:sn.web01data",
+                    "lun": 0,
+                    "targetPortal": "10.20.0.5:3260"
+                  }
+                },
+                "sourceDiskID": "wwn-0x600a098038304437"
+              }
+            ],
+            "mode": "cold",
+            "nics": [
+              {
+                "keepIP": true,
+                "keepMAC": true,
+                "networkName": "vlan100",
+                "sourceMAC": "3c:ec:ef:12:34:56",
+                "type": "multus"
+              }
+            ],
+            "sourceRef": {
+              "name": "web01"
+            },
+            "targetVM": {
+              "memory": "16Gi",
+              "name": "web01"
+            },
+            "testBoot": true
+          }
+        },
+        {
+          "apiVersion": "migration.metal2vm.io/v1alpha1",
+          "kind": "P2VSource",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/managed-by": "kustomize",
+              "app.kubernetes.io/name": "metal2vm"
+            },
+            "name": "web01"
+          },
+          "spec": {
+            "bmc": {
+              "address": "https://10.10.0.21",
+              "credentialsSecretRef": {
+                "name": "web01-bmc"
+              }
+            },
+            "osAccess": {
+              "address": "web01.example.com",
+              "credentialsSecretRef": {
+                "name": "web01-ssh"
+              },
+              "type": "ssh"
+            }
+          }
+        }
+      ]
+    capabilities: Basic Install
+    categories: Modernization & Migration
+    console.openshift.io/plugins: '["metal2vm-console-plugin"]'
+    containerImage: ghcr.io/metal2vm/metal2vm-operator:v0.1.0
+    description: Migrate physical servers to virtual machines on OpenShift Virtualization.
+    features.operators.openshift.io/cnf: "false"
+    features.operators.openshift.io/cni: "false"
+    features.operators.openshift.io/csi: "false"
+    features.operators.openshift.io/disconnected: "true"
+    features.operators.openshift.io/fips-compliant: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    features.operators.openshift.io/token-auth-aws: "false"
+    features.operators.openshift.io/token-auth-azure: "false"
+    features.operators.openshift.io/token-auth-gcp: "false"
+    operatorframework.io/suggested-namespace: metal2vm-system
+    operators.operatorframework.io/builder: operator-sdk-v1.42.3
+    operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
+    repository: https://github.com/metal2vm/metal2vm
+    support: Community
+  name: metal2vm.v0.1.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: P2VConfig is the cluster-wide metal2vm configuration. It must be
+        named "cluster".
+      displayName: metal2vm Settings
+      kind: P2VConfig
+      name: p2vconfigs.migration.metal2vm.io
+      version: v1alpha1
+    - description: P2VMigration migrates one P2VSource to a VirtualMachine.
+      displayName: Physical Server Migration
+      kind: P2VMigration
+      name: p2vmigrations.migration.metal2vm.io
+      version: v1alpha1
+    - description: P2VSource is a physical server that can be migrated to a VM.
+      displayName: Physical Server
+      kind: P2VSource
+      name: p2vsources.migration.metal2vm.io
+      version: v1alpha1
+  description: |
+    metal2vm moves Linux and Windows servers from bare metal into KubeVirt virtual
+    machines, from the OpenShift web console. An admin picks the server, chooses
+    what happens to each disk and network card, starts the migration, checks the
+    test-booted VM and cuts over. The server's disks are only read, so rolling back
+    means powering the server on again.
+
+    **Status: alpha.** Tested end to end on a lab cluster with simulated physical
+    servers (RHEL 9, Windows Server 2022); not yet on real hardware.
+
+    ## How it works
+    1. The server boots the metal2vm live environment (Fedora CoreOS) through its
+       BMC (Redfish virtual media), PXE/iPXE, or a USB stick.
+    2. The live agent calls home over HTTPS 443 and exposes the disks read-only.
+    3. Disks are copied into block PVCs with nbdcopy and converted in place with
+       virt-v2v (virtio drivers, bootloader, network config).
+    4. The VM test-boots without network; at cutover the server is powered off and
+       the VM starts on its production networks.
+
+    ## After installing
+    * Enable the console plugin (Console plugin: Enabled), then use
+      **Virtualization → Physical servers**.
+    * Requirements: OpenShift Virtualization and a storage class with block-mode
+      PVCs. The operator creates the SecurityContextConstraints
+      `metal2vm-conversion` for its conversion pods.
+    * Disconnected clusters: mirror the images listed under related images
+      (`oc-mirror` does this automatically).
+
+    Documentation: https://github.com/metal2vm/metal2vm
+  displayName: metal2vm
+  icon:
+  - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij4KICA8cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI0IiBmaWxsPSIjMWYyYTQ0Ii8+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSI1IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPgogICAgPHJlY3QgeD0iMTYiIHk9IjM0IiB3aWR0aD0iMzgiIGhlaWdodD0iNjAiIHJ4PSI1IiBzdHJva2U9IiNmMGFiMDAiLz4KICAgIDxsaW5lIHgxPSIyNCIgeTE9IjQ4IiB4Mj0iNDYiIHkyPSI0OCIgc3Ryb2tlPSIjZjBhYjAwIi8+CiAgICA8bGluZSB4MT0iMjQiIHkxPSI2MCIgeDI9IjQ2IiB5Mj0iNjAiIHN0cm9rZT0iI2YwYWIwMCIvPgogICAgPGNpcmNsZSBjeD0iMzUiIGN5PSI4MCIgcj0iMyIgZmlsbD0iI2YwYWIwMCIgc3Ryb2tlPSJub25lIi8+CiAgICA8cGF0aCBkPSJNNjAgNjRoMTRtLTYtNyA3IDctNyA3IiBzdHJva2U9IiNmZmZmZmYiLz4KICAgIDxyZWN0IHg9IjgwIiB5PSI0MCIgd2lkdGg9IjM0IiBoZWlnaHQ9IjQ4IiByeD0iNSIgc3Ryb2tlPSIjNzNiY2Y3IiBzdHJva2UtZGFzaGFycmF5PSI3IDUiLz4KICAgIDxyZWN0IHg9Ijg4IiB5PSI1MCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjEyIiByeD0iMiIgc3Ryb2tlPSIjNzNiY2Y3Ii8+CiAgICA8bGluZSB4MT0iODgiIHkxPSI3NCIgeDI9IjEwNiIgeTI9Ijc0IiBzdHJva2U9IiM3M2JjZjciLz4KICA8L2c+Cjwvc3ZnPgo=
+    mediatype: image/svg+xml
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - persistentvolumeclaims
+          - pods
+          - secrets
+          - services
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - ""
+          resources:
+          - serviceaccounts
+          verbs:
+          - create
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - cdi.kubevirt.io
+          resources:
+          - storageprofiles
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - config.openshift.io
+          resources:
+          - ingresses
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - console.openshift.io
+          resources:
+          - consoleplugins
+          verbs:
+          - create
+        - apiGroups:
+          - console.openshift.io
+          resourceNames:
+          - metal2vm-console-plugin
+          resources:
+          - consoleplugins
+          verbs:
+          - delete
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - k8s.cni.cncf.io
+          resources:
+          - network-attachment-definitions
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - kubevirt.io
+          resources:
+          - virtualmachineinstances
+          verbs:
+          - delete
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - kubevirt.io
+          resources:
+          - virtualmachines
+          verbs:
+          - create
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - kubevirt.io
+          resources:
+          - virtualmachines/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - migration.metal2vm.io
+          resources:
+          - p2vconfigs
+          - p2vmigrations
+          - p2vsources
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - migration.metal2vm.io
+          resources:
+          - p2vconfigs/finalizers
+          - p2vmigrations/finalizers
+          - p2vsources/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - migration.metal2vm.io
+          resources:
+          - p2vconfigs/status
+          - p2vmigrations/status
+          - p2vsources/status
+          verbs:
+          - get
+          - patch
+          - update
+        - apiGroups:
+          - operator.openshift.io
+          resourceNames:
+          - cluster
+          resources:
+          - consoles
+          verbs:
+          - get
+          - patch
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resourceNames:
+          - metal2vm-conversion-scc
+          resources:
+          - clusterroles
+          verbs:
+          - get
+        - apiGroups:
+          - rbac.authorization.k8s.io
+          resources:
+          - rolebindings
+          verbs:
+          - create
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - route.openshift.io
+          resources:
+          - routes
+          verbs:
+          - create
+          - delete
+          - get
+          - list
+          - patch
+          - update
+          - watch
+        - apiGroups:
+          - route.openshift.io
+          resources:
+          - routes/custom-host
+          verbs:
+          - create
+          - patch
+          - update
+        - apiGroups:
+          - security.openshift.io
+          resources:
+          - securitycontextconstraints
+          verbs:
+          - create
+        - apiGroups:
+          - security.openshift.io
+          resourceNames:
+          - metal2vm-conversion
+          resources:
+          - securitycontextconstraints
+          verbs:
+          - delete
+          - get
+          - patch
+          - update
+          - use
+        - apiGroups:
+          - storage.k8s.io
+          resources:
+          - storageclasses
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - authentication.k8s.io
+          resources:
+          - tokenreviews
+          verbs:
+          - create
+        - apiGroups:
+          - authorization.k8s.io
+          resources:
+          - subjectaccessreviews
+          verbs:
+          - create
+        serviceAccountName: metal2vm-controller-manager
+      deployments:
+      - label:
+          app: metal2vm-console-plugin
+          app.kubernetes.io/part-of: metal2vm
+        name: metal2vm-console-plugin
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: metal2vm-console-plugin
+          strategy: {}
+          template:
+            metadata:
+              labels:
+                app: metal2vm-console-plugin
+            spec:
+              containers:
+              - image: ghcr.io/metal2vm/metal2vm-console-plugin:v0.1.0
+                name: plugin
+                ports:
+                - containerPort: 9443
+                  protocol: TCP
+                resources:
+                  limits:
+                    memory: 128Mi
+                  requests:
+                    cpu: 10m
+                    memory: 50Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                volumeMounts:
+                - mountPath: /var/cert
+                  name: cert
+                  readOnly: true
+                - mountPath: /etc/nginx/nginx.conf
+                  name: nginx-conf
+                  readOnly: true
+                  subPath: nginx.conf
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              volumes:
+              - name: cert
+                secret:
+                  defaultMode: 420
+                  secretName: metal2vm-console-plugin-cert
+              - configMap:
+                  defaultMode: 420
+                  name: metal2vm-console-plugin
+                name: nginx-conf
+      - label:
+          app.kubernetes.io/managed-by: kustomize
+          app.kubernetes.io/name: metal2vm
+          control-plane: controller-manager
+        name: metal2vm-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app.kubernetes.io/name: metal2vm
+              control-plane: controller-manager
+          strategy: {}
+          template:
+            metadata:
+              annotations:
+                kubectl.kubernetes.io/default-container: manager
+              labels:
+                app.kubernetes.io/name: metal2vm
+                control-plane: controller-manager
+            spec:
+              containers:
+              - args:
+                - --metrics-bind-address=:8443
+                - --leader-elect
+                - --health-probe-bind-address=:8081
+                - --live-iso=/var/lib/metal2vm/boot/live.iso
+                - --live-tools=/var/lib/metal2vm/boot/live-tools.tar.gz
+                - --pxe-dir=/var/lib/metal2vm/boot/pxe
+                - --agent-binary=/metal2vm-agent
+                command:
+                - /manager
+                env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: RELATED_IMAGE_TRANSFER
+                  value: ghcr.io/metal2vm/metal2vm-transfer:v0.1.0
+                image: ghcr.io/metal2vm/metal2vm-operator:v0.1.0
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 8081
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                name: manager
+                ports:
+                - containerPort: 8081
+                  name: health
+                  protocol: TCP
+                - containerPort: 9444
+                  name: gateway
+                  protocol: TCP
+                - containerPort: 9445
+                  name: boot-http
+                  protocol: TCP
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 8081
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                resources:
+                  limits:
+                    cpu: "1"
+                    memory: 256Mi
+                  requests:
+                    cpu: 10m
+                    memory: 64Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  readOnlyRootFilesystem: true
+                volumeMounts:
+                - mountPath: /var/lib/metal2vm/boot
+                  name: boot
+                  readOnly: true
+              initContainers:
+              - command:
+                - cp
+                - -R
+                - /boot/live.iso
+                - /boot/live-tools.tar.gz
+                - /boot/pxe
+                - /var/lib/metal2vm/boot/
+                image: ghcr.io/metal2vm/metal2vm-boot-artifacts:v0.1.0
+                name: boot-artifacts
+                resources:
+                  limits:
+                    cpu: 500m
+                    memory: 64Mi
+                  requests:
+                    cpu: 10m
+                    memory: 16Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                    - ALL
+                  readOnlyRootFilesystem: true
+                volumeMounts:
+                - mountPath: /var/lib/metal2vm/boot
+                  name: boot
+              securityContext:
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+              serviceAccountName: metal2vm-controller-manager
+              terminationGracePeriodSeconds: 10
+              volumes:
+              - emptyDir:
+                  sizeLimit: 4Gi
+                name: boot
+      permissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - configmaps
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          verbs:
+          - create
+          - patch
+        serviceAccountName: metal2vm-controller-manager
+    strategy: deployment
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - p2v
+  - physical
+  - bare metal
+  - migration
+  - virtualization
+  - kubevirt
+  - virt-v2v
+  links:
+  - name: Source code and documentation
+    url: https://github.com/metal2vm/metal2vm
+  - name: Design
+    url: https://github.com/metal2vm/metal2vm/blob/main/docs/DESIGN.md
+  maintainers:
+  - email: linusali@gmail.com
+    name: Mohammed Salih Puthenpurayil
+  maturity: alpha
+  minKubeVersion: 1.35.0
+  provider:
+    name: metal2vm project
+    url: https://github.com/metal2vm/metal2vm
+  relatedImages:
+  - image: ghcr.io/metal2vm/metal2vm-transfer:v0.1.0
+    name: transfer
+  - image: ghcr.io/metal2vm/metal2vm-boot-artifacts:v0.1.0
+    name: boot-artifacts
+  - image: ghcr.io/metal2vm/metal2vm-console-plugin:v0.1.0
+    name: console-plugin
+  - image: ghcr.io/metal2vm/metal2vm-operator:v0.1.0
+    name: operator
+  version: 0.1.0

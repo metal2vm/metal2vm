@@ -393,6 +393,7 @@ type PreflightResult struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // P2VMigration migrates one P2VSource to a VirtualMachine.
+// +operator-sdk:csv:customresourcedefinitions:displayName="Physical Server Migration"
 type P2VMigration struct {
 	metav1.TypeMeta `json:",inline"`
 

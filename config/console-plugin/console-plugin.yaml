@@ -1,12 +1,11 @@
 # The metal2vm OpenShift console plugin: nginx serving the plugin bundle over
-# TLS (service-CA certificate), registered with a ConsolePlugin. Enabling it
-# also needs "metal2vm-console-plugin" in consoles.operator.openshift.io/cluster
-# spec.plugins.
+# TLS (service-CA certificate). The operator registers it (ConsolePlugin
+# metal2vm-console-plugin); enabling it is a switch in the console, or the
+# operator flag --enable-console-plugin.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: metal2vm-console-plugin
-  namespace: metal2vm-system
+  name: console-plugin
   labels: {app: metal2vm-console-plugin, app.kubernetes.io/part-of: metal2vm}
 data:
   nginx.conf: |
@@ -29,8 +28,7 @@ data:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: metal2vm-console-plugin
-  namespace: metal2vm-system
+  name: console-plugin
   labels: {app: metal2vm-console-plugin, app.kubernetes.io/part-of: metal2vm}
 spec:
   replicas: 1
@@ -52,28 +50,15 @@ spec:
         - {name: nginx-conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true}
       volumes:
       - {name: cert, secret: {secretName: metal2vm-console-plugin-cert, defaultMode: 420}}
-      - {name: nginx-conf, configMap: {name: metal2vm-console-plugin, defaultMode: 420}}
+      - {name: nginx-conf, configMap: {name: console-plugin, defaultMode: 420}}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: metal2vm-console-plugin
-  namespace: metal2vm-system
+  name: console-plugin
   labels: {app: metal2vm-console-plugin, app.kubernetes.io/part-of: metal2vm}
   annotations:
     service.beta.openshift.io/serving-cert-secret-name: metal2vm-console-plugin-cert
 spec:
   selector: {app: metal2vm-console-plugin}
   ports: [{name: https, port: 9443, targetPort: 9443, protocol: TCP}]
----
-apiVersion: console.openshift.io/v1
-kind: ConsolePlugin
-metadata:
-  name: metal2vm-console-plugin
-  labels: {app.kubernetes.io/part-of: metal2vm}
-spec:
-  displayName: metal2vm
-  i18n: {loadType: Preload}
-  backend:
-    type: Service
-    service: {name: metal2vm-console-plugin, namespace: metal2vm-system, port: 9443, basePath: /}

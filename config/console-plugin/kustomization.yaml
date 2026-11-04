@@ -1,0 +1,9 @@
+# Console plugin workload; part of config/openshift.
+namespace: metal2vm-system
+namePrefix: metal2vm-
+resources:
+- console-plugin.yaml
+images:
+- name: console-plugin
+  newName: ghcr.io/metal2vm/metal2vm-console-plugin
+  newTag: v0.1.0

@@ -33,7 +33,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	configv1 "github.com/openshift/api/config/v1"
+	consolev1 "github.com/openshift/api/console/v1"
+	operatorv1 "github.com/openshift/api/operator/v1"
 	routev1 "github.com/openshift/api/route/v1"
+	securityv1 "github.com/openshift/api/security/v1"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 
 	migrationv1alpha1 "github.com/metal2vm/metal2vm/api/v1alpha1"
@@ -66,6 +69,9 @@ var _ = BeforeSuite(func() {
 	Expect(routev1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(configv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(kubevirtv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(securityv1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(consolev1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(operatorv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	err = migrationv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 

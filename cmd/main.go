@@ -28,7 +28,10 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	configv1 "github.com/openshift/api/config/v1"
+	consolev1 "github.com/openshift/api/console/v1"
+	operatorv1 "github.com/openshift/api/operator/v1"
 	routev1 "github.com/openshift/api/route/v1"
+	securityv1 "github.com/openshift/api/security/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -64,6 +67,9 @@ func init() {
 	utilruntime.Must(routev1.AddToScheme(scheme))
 	utilruntime.Must(configv1.AddToScheme(scheme))
 	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
+	utilruntime.Must(securityv1.AddToScheme(scheme))
+	utilruntime.Must(consolev1.AddToScheme(scheme))
+	utilruntime.Must(operatorv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -79,6 +85,7 @@ func main() {
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	var gatewayAddr, isoPath, agentPath, toolsPath, pxeDir, bootHTTPAddr string
+	var consolePlugin, enableConsolePlugin bool
 	flag.StringVar(&pxeDir, "pxe-dir", "/var/lib/metal2vm/boot/pxe",
 		"Directory with the live kernel, initramfs.img and rootfs.img for PXE boot.")
 	flag.StringVar(&bootHTTPAddr, "boot-http-bind-address", fmt.Sprintf(":%d", gateway.HTTPPort),
@@ -91,6 +98,10 @@ func main() {
 		"Path of the CoreOS live ISO used to build per-source boot media.")
 	flag.StringVar(&agentPath, "agent-binary", "/metal2vm-agent",
 		"Path of the linux/amd64 agent binary served to live environments.")
+	flag.BoolVar(&consolePlugin, "console-plugin", true,
+		"Register the metal2vm console plugin (ConsolePlugin) when the cluster has the OpenShift console.")
+	flag.BoolVar(&enableConsolePlugin, "enable-console-plugin", false,
+		"Also enable the plugin in consoles.operator.openshift.io/cluster (otherwise an admin enables it).")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -227,8 +238,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := controller.SetupControllers(mgr, controller.Options{
-		Namespace:     operatorNamespace,
-		TransferImage: transferImage,
+		Namespace:           operatorNamespace,
+		TransferImage:       transferImage,
+		ConsolePlugin:       consolePlugin,
+		EnableConsolePlugin: enableConsolePlugin,
 	}); err != nil {
 		setupLog.Error(err, "Failed to create controllers")
 		os.Exit(1)

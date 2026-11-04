@@ -1,0 +1,113 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    categories: Modernization & Migration
+    console.openshift.io/plugins: '["metal2vm-console-plugin"]'
+    containerImage: ghcr.io/metal2vm/metal2vm-operator:v0.1.0
+    description: Migrate physical servers to virtual machines on OpenShift Virtualization.
+    features.operators.openshift.io/cnf: "false"
+    features.operators.openshift.io/cni: "false"
+    features.operators.openshift.io/csi: "false"
+    features.operators.openshift.io/disconnected: "true"
+    features.operators.openshift.io/fips-compliant: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    features.operators.openshift.io/token-auth-aws: "false"
+    features.operators.openshift.io/token-auth-azure: "false"
+    features.operators.openshift.io/token-auth-gcp: "false"
+    operatorframework.io/suggested-namespace: metal2vm-system
+    repository: https://github.com/metal2vm/metal2vm
+    support: Community
+  name: metal2vm.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: P2VConfig is the cluster-wide metal2vm configuration. It must be
+        named "cluster".
+      displayName: metal2vm Settings
+      kind: P2VConfig
+      name: p2vconfigs.migration.metal2vm.io
+      version: v1alpha1
+    - description: P2VMigration migrates one P2VSource to a VirtualMachine.
+      displayName: Physical Server Migration
+      kind: P2VMigration
+      name: p2vmigrations.migration.metal2vm.io
+      version: v1alpha1
+    - description: P2VSource is a physical server that can be migrated to a VM.
+      displayName: Physical Server
+      kind: P2VSource
+      name: p2vsources.migration.metal2vm.io
+      version: v1alpha1
+  description: |
+    metal2vm moves Linux and Windows servers from bare metal into KubeVirt virtual
+    machines, from the OpenShift web console. An admin picks the server, chooses
+    what happens to each disk and network card, starts the migration, checks the
+    test-booted VM and cuts over. The server's disks are only read, so rolling back
+    means powering the server on again.
+
+    **Status: alpha.** Tested end to end on a lab cluster with simulated physical
+    servers (RHEL 9, Windows Server 2022); not yet on real hardware.
+
+    ## How it works
+    1. The server boots the metal2vm live environment (Fedora CoreOS) through its
+       BMC (Redfish virtual media), PXE/iPXE, or a USB stick.
+    2. The live agent calls home over HTTPS 443 and exposes the disks read-only.
+    3. Disks are copied into block PVCs with nbdcopy and converted in place with
+       virt-v2v (virtio drivers, bootloader, network config).
+    4. The VM test-boots without network; at cutover the server is powered off and
+       the VM starts on its production networks.
+
+    ## After installing
+    * Enable the console plugin (Console plugin: Enabled), then use
+      **Virtualization → Physical servers**.
+    * Requirements: OpenShift Virtualization and a storage class with block-mode
+      PVCs. The operator creates the SecurityContextConstraints
+      `metal2vm-conversion` for its conversion pods.
+    * Disconnected clusters: mirror the images listed under related images
+      (`oc-mirror` does this automatically).
+
+    Documentation: https://github.com/metal2vm/metal2vm
+  displayName: metal2vm
+  icon:
+  - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij4KICA8cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjI0IiBmaWxsPSIjMWYyYTQ0Ii8+CiAgPGcgZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSI1IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPgogICAgPHJlY3QgeD0iMTYiIHk9IjM0IiB3aWR0aD0iMzgiIGhlaWdodD0iNjAiIHJ4PSI1IiBzdHJva2U9IiNmMGFiMDAiLz4KICAgIDxsaW5lIHgxPSIyNCIgeTE9IjQ4IiB4Mj0iNDYiIHkyPSI0OCIgc3Ryb2tlPSIjZjBhYjAwIi8+CiAgICA8bGluZSB4MT0iMjQiIHkxPSI2MCIgeDI9IjQ2IiB5Mj0iNjAiIHN0cm9rZT0iI2YwYWIwMCIvPgogICAgPGNpcmNsZSBjeD0iMzUiIGN5PSI4MCIgcj0iMyIgZmlsbD0iI2YwYWIwMCIgc3Ryb2tlPSJub25lIi8+CiAgICA8cGF0aCBkPSJNNjAgNjRoMTRtLTYtNyA3IDctNyA3IiBzdHJva2U9IiNmZmZmZmYiLz4KICAgIDxyZWN0IHg9IjgwIiB5PSI0MCIgd2lkdGg9IjM0IiBoZWlnaHQ9IjQ4IiByeD0iNSIgc3Ryb2tlPSIjNzNiY2Y3IiBzdHJva2UtZGFzaGFycmF5PSI3IDUiLz4KICAgIDxyZWN0IHg9Ijg4IiB5PSI1MCIgd2lkdGg9IjE4IiBoZWlnaHQ9IjEyIiByeD0iMiIgc3Ryb2tlPSIjNzNiY2Y3Ii8+CiAgICA8bGluZSB4MT0iODgiIHkxPSI3NCIgeDI9IjEwNiIgeTI9Ijc0IiBzdHJva2U9IiM3M2JjZjciLz4KICA8L2c+Cjwvc3ZnPgo=
+    mediatype: image/svg+xml
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - p2v
+  - physical
+  - bare metal
+  - migration
+  - virtualization
+  - kubevirt
+  - virt-v2v
+  links:
+  - name: Source code and documentation
+    url: https://github.com/metal2vm/metal2vm
+  - name: Design
+    url: https://github.com/metal2vm/metal2vm/blob/main/docs/DESIGN.md
+  maintainers:
+  - email: linusali@gmail.com
+    name: Mohammed Salih Puthenpurayil
+  maturity: alpha
+  minKubeVersion: 1.35.0
+  provider:
+    name: metal2vm project
+    url: https://github.com/metal2vm/metal2vm
+  version: 0.0.0

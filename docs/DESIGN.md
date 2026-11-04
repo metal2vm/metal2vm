@@ -218,7 +218,7 @@ Maps the inventory and plan to a KubeVirt `VirtualMachine`:
 ### 3.8.3 As built in M3: conversion, test boot, cutover
 - **Conversion pod:** the transfer image (CentOS Stream 10, `virt-v2v` 2.13, virtio-win 0.1.302 pinned by SHA-256) runs `/usr/libexec/virt-v2v-in-place -i libvirtxml … -O inspection.xml`. The inspector XML provides the OS (`osinfo`, product name), the firmware the guest needs, and the **boot order per disk**. The pod requests `devices.kubevirt.io/kvm`.
   - Red Hat marks `virt-v2v-in-place` "not supported for command line use". It ships for MTV/Forklift to call, which is how metal2vm uses it.
-- **SCC:** virt-v2v always enables networking for its conversion VM. Its network helper (`passt`) needs `unshare(2)`, which CRI-O's default seccomp profile blocks. Conversion pods therefore run as SA `metal2vm-conversion` under SCC `metal2vm-conversion`: restricted-v2 plus CRI-O's stock `localhost/profiles/unshare.json`, which ships with the node OS. This is the same approach as MTV. On non-OpenShift clusters they use RuntimeDefault.
+- **SCC:** virt-v2v always enables networking for its conversion VM. Its network helper (`passt`) needs `unshare(2)`, which CRI-O's default seccomp profile blocks. Conversion pods therefore run as SA `metal2vm-conversion` under SCC `metal2vm-conversion`: restricted-v2 plus CRI-O's stock `localhost/profiles/unshare.json`, which ships with the node OS. This is the same approach as MTV. On non-OpenShift clusters they use RuntimeDefault. Since M7 the operator creates and repairs this SCC itself (see 3.8.7).
 - **VM:** built from the inventory, the plan and the inspector output:
   - EFI with Secure Boot (and SMM), persistent EFI variables, and a persistent vTPM when the source had a TPM
   - virtio disks in the inspector's boot order
@@ -269,12 +269,32 @@ Maps the inventory and plan to a KubeVirt `VirtualMachine`:
   - An iPXE chain over HTTP fell through to the disk when no migration was waiting, and booted the live environment in 72 seconds when one was.
 
 ### 3.8.6 As built in M5: console plugin
-- **Delivery:** `config/console-plugin` (nginx Deployment with a serving certificate, ConsolePlugin CR). The admin enables it once in the console operator.
+- **Delivery:** `config/console-plugin` (nginx Deployment with a serving certificate). Since M7 the operator registers the ConsolePlugin; enabling it is the console's *Console plugin* switch, the OLM install toggle, Helm's `consolePlugin.enableInConsole`, or the operator flag `--enable-console-plugin`.
 - **Pages** under *Virtualization*, namespace-scoped through the project selector:
   - *Physical servers*: list, *Add physical server* (BMC, PXE and OS pre-check; credentials go to `<name>-bmc` / `<name>-os` Secrets), and details with inventory, risks, ISO download and iPXE URL.
   - *Migrate a server* wizard: server and boot method, per-disk action and storage class, per-NIC network with keep MAC/IP, VM size, then a plain-language review (the raw `P2VMigration` is behind an expander). The default migration name avoids existing ones.
   - *Physical migrations*: list, and details with a progress stepper, disks, guest network notes, conditions, a VM console link, and *Cut over* / *Roll back* / *Archive* with confirmation. These buttons only set `spec` fields; the operator does the work.
 - The plugin holds no logic the operator lacks; everything it does can be done with `oc` on the CRs.
+
+### 3.8.7 As built in M7: packaging and disconnected install
+- **Three install paths, one set of manifests.** `config/openshift` (operator plus console plugin) is the source for:
+  - `dist/install.yaml` (`make build-installer`);
+  - the Helm chart `dist/chart` (Kubebuilder's helm/v2-alpha plugin, plus hand-written console-plugin templates and values);
+  - the OLM bundle (`make bundle`, operator-sdk, CSV base in `config/manifests`) and file-based catalog (`make catalog`, opm).
+- **Cluster-scoped objects come from the operator.** OLM bundles cannot carry SCCs or ConsolePlugins, so the operator creates the SCC `metal2vm-conversion` and the ConsolePlugin itself, and repairs drift every 10 minutes (`internal/controller/platform.go`, leader only).
+  - Both are owned by the installer-managed ClusterRole `metal2vm-conversion-scc`, so removing it removes them. This was verified on the lab: deleting the dev deployment garbage-collected both.
+  - Helm and kubectl delete that ClusterRole on uninstall. OLM does not delete cluster-scoped bundle objects; the OLM uninstall in `docs/install.md` therefore deletes them by label (verified).
+  - RBAC: `create` on SCCs and ConsolePlugins; `get/update/patch/delete` only on these two names. OpenShift requires `delete` to set an ownerReference.
+  - The operator only adds the plugin to the console config when asked (`--enable-console-plugin`).
+- **Optional APIs are detected at start** (Routes, KubeVirt, SCC, console). Missing ones are not watched and are reported in status instead (`RouteAPIUnavailable`, pre-flight `KubeVirtAvailable`). The operator starts on plain Kubernetes; the e2e workflow runs it in Kind.
+- **Images** (`ghcr.io/metal2vm`, `linux/amd64`): operator, transfer, boot-artifacts, console-plugin, plus bundle and catalog. All four runtime images are in the CSV's `relatedImages` (`hack/csv-related-images`), so `oc-mirror` mirrors them from the catalog alone. Examples are in `docs/oc-mirror/`.
+- **Reproducible generation:** the CSV's `createdAt` is dropped and bundle files are made world-readable (OLM reads them as another user). The Packaging workflow fails when `bundle/`, `catalog/` or `dist/install.yaml` are stale, and installs the chart into Kind.
+- **Releases** (`.github/workflows/release.yml`) run on tags `vX.Y.Z`: images, bundle, catalog, chart (OCI) and a GitHub release with `install.yaml`. Steps are in `docs/releasing.md`.
+- **Verified on the lab (OCP 4.22):**
+  - OLM install from a cluster-built catalog: CSV `Succeeded`, gateway available, SCC and ConsolePlugin recreated under OLM's ClusterRole, existing P2VSources kept.
+  - Then a Redfish-driven migration under that install, through conversion to the test boot. The conversion pod ran under the operator-created SCC.
+  - Helm install with the cluster-built images: both Deployments Ready, SCC and ConsolePlugin owned by the chart's ClusterRole, plugin enabled. `helm uninstall` removed both and kept the CRDs and P2VSources.
+  - The lab run found two chart bugs, now fixed: `envOverrides` produced duplicate env entries (rejected by server-side apply), and images could not be given by digest.
 
 ### 3.9 Required network flows (included in the docs)
 | From | To | Port | Purpose |
@@ -303,8 +323,11 @@ internal/inventory/      inventory model + preflight rules
 internal/vmbuilder/      KubeVirt VM spec
 internal/netmap/         firstboot network re-mapping
 console-plugin/          TS/React/PatternFly dynamic plugin
-images/                  Containerfiles: operator, agent, transfer (virt-v2v), boot-artifacts
-bundle/  charts/metal2vm/  hack/  docs/
+images/                  Containerfiles: transfer (virt-v2v), boot-artifacts (Dockerfile at the root: operator)
+config/                  kustomize: default (operator), openshift (+ console plugin), manifests (CSV base)
+bundle/  catalog/        generated OLM bundle and file-based catalog
+dist/                    install.yaml and the Helm chart (dist/chart)
+hack/  docs/  test/
 LICENSE  NOTICE  THIRD_PARTY_LICENSES.md
 ```
 
@@ -323,6 +346,8 @@ LICENSE  NOTICE  THIRD_PARTY_LICENSES.md
 6. **M5**: console plugin wizard and dashboards.
 7. **M6**: SAN re-attach, network-identity firstboot, SSH/WinRM pre-check.
 8. **M7**: OLM bundle, Helm chart, oc-mirror config, disconnected-install docs.
+
+Status: M0–M5 and M7 are done. M6 is partly done: the network identity and the SSH/WinRM pre-check are in; SAN LUN re-attach is still open.
 9. **Phase 2**: warm agents for Linux and Windows.
 
 ## 8. Known risks and pre-flight blockers

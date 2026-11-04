@@ -67,32 +67,31 @@ case "$STEP" in plugin|all)
   echo ">> building metal2vm-console-plugin on the cluster"
   "$OC" -n "$NS" start-build metal2vm-console-plugin --from-dir="$ctx" --follow --wait | tail -n 1
   rm -rf "$ctx"
-  pimg="$(image_ref metal2vm-console-plugin)"
-  sed "s#image: console-plugin:latest#image: $pimg#" config/console-plugin/console-plugin.yaml | kubectl apply --server-side -f -
-  kubectl -n "$NS" rollout status deploy/metal2vm-console-plugin --timeout=180s
-  # Enable the plugin in the console (cluster-wide setting), once.
-  if ! kubectl get consoles.operator.openshift.io cluster -o jsonpath='{.spec.plugins}' | grep -q metal2vm-console-plugin; then
-    kubectl patch consoles.operator.openshift.io cluster --type=json \
-      -p '[{"op":"add","path":"/spec/plugins/-","value":"metal2vm-console-plugin"}]'
-  fi ;;
+  ;;
 esac
 case "$STEP" in deploy|all)
   op="$(image_ref metal2vm-operator)"
   bootimg="$(image_ref metal2vm-boot-artifacts)"
   xferimg="$(image_ref metal2vm-transfer)"
+  pimg="$(image_ref metal2vm-console-plugin)"
   echo ">> deploying operator $op"
   work="$(mktemp -d "$ROOT/.deploy-XXXX")"
   trap 'rm -rf "$work"' EXIT
+  # config/openshift = operator + console plugin; the release image names are
+  # replaced with the images built on the cluster.
   cat > "$work/kustomization.yaml" <<EOF
 resources:
-- ../config/default
+- ../config/openshift
 images:
-- name: controller
+- name: ghcr.io/metal2vm/metal2vm-operator
   newName: ${op%@*}
   digest: ${op#*@}
-- name: boot-artifacts
+- name: ghcr.io/metal2vm/metal2vm-boot-artifacts
   newName: ${bootimg%@*}
   digest: ${bootimg#*@}
+- name: ghcr.io/metal2vm/metal2vm-console-plugin
+  newName: ${pimg%@*}
+  digest: ${pimg#*@}
 patches:
 - target:
     kind: Deployment
@@ -101,8 +100,11 @@ patches:
     - op: replace
       path: /spec/template/spec/containers/0/env/1/value
       value: $xferimg
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --enable-console-plugin
 EOF
   hack/toolbox.sh bash -c "make kustomize >/dev/null && bin/kustomize build $(basename "$work")" | kubectl apply --server-side -f -
-  kubectl apply --server-side -k config/scc
-  kubectl -n "$NS" rollout status deploy/metal2vm-controller-manager --timeout=300s ;;
+  kubectl -n "$NS" rollout status deploy/metal2vm-controller-manager --timeout=300s
+  kubectl -n "$NS" rollout status deploy/metal2vm-console-plugin --timeout=180s ;;
 esac

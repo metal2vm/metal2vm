@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  creationTimestamp: null
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: metal2vm
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+  name: metal2vm-p2vsource-admin-role
+rules:
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources
+  verbs:
+  - '*'
+- apiGroups:
+  - migration.metal2vm.io
+  resources:
+  - p2vsources/status
+  verbs:
+  - get

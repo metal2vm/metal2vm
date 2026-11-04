@@ -1,0 +1,80 @@
+name: Release
+
+# Publishes a release when a tag vX.Y.Z is pushed. Prepare it first with
+#   hack/toolbox.sh make set-version VERSION=X.Y.Z   (then commit)
+# Images go to ghcr.io/metal2vm (linux/amd64), the chart to
+# oci://ghcr.io/metal2vm/charts, and dist/install.yaml to the GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  release:
+    permissions:
+      contents: write
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check the version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          configured="$(sed -n 's/^VERSION ?= //p' Makefile)"
+          if [ "$version" != "$configured" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match VERSION ?= $configured in the Makefile (run make set-version)."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push the images
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          r=ghcr.io/metal2vm
+          docker build --build-arg VERSION=v$V -t $r/metal2vm-operator:v$V .
+          docker build --build-arg VERSION=v$V -t $r/metal2vm-transfer:v$V -f images/transfer/Containerfile .
+          docker build -t $r/metal2vm-boot-artifacts:v$V -f images/boot-artifacts/Containerfile images/boot-artifacts
+          docker build -t $r/metal2vm-console-plugin:v$V console-plugin
+          for i in operator transfer boot-artifacts console-plugin; do docker push $r/metal2vm-$i:v$V; done
+
+      - name: Build and push the OLM bundle and catalog
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          make catalog
+          git diff --exit-code -- bundle catalog || { echo "::error::bundle/catalog not regenerated for this version"; exit 1; }
+          make bundle-build catalog-build
+          docker push ghcr.io/metal2vm/metal2vm-operator-bundle:v$V
+          docker push ghcr.io/metal2vm/metal2vm-operator-catalog:v$V
+
+      - name: Package and push the Helm chart
+        run: |
+          make helm
+          bin/helm package dist/chart -d dist
+          echo "${{ secrets.GITHUB_TOKEN }}" | bin/helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          bin/helm push dist/metal2vm-*.tgz oci://ghcr.io/metal2vm/charts
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          make build-installer
+          gh release create "$GITHUB_REF_NAME" dist/install.yaml dist/metal2vm-*.tgz \
+            --title "metal2vm $GITHUB_REF_NAME" --generate-notes --prerelease

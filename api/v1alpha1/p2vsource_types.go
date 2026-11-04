@@ -362,6 +362,7 @@ type NIC struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // P2VSource is a physical server that can be migrated to a VM.
+// +operator-sdk:csv:customresourcedefinitions:displayName="Physical Server"
 type P2VSource struct {
 	metav1.TypeMeta `json:",inline"`
 

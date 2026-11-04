@@ -1,0 +1,5 @@
+# metal2vm for OpenShift: the operator (config/default) plus the console
+# plugin workload. Used by dist/install.yaml, the Helm chart and the OLM bundle.
+resources:
+- ../default
+- ../console-plugin

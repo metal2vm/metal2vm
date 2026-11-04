@@ -1,0 +1,11 @@
+# oc-mirror v2: mirror only the metal2vm images, for a Helm or YAML install.
+# Copy the chart (helm pull oci://ghcr.io/metal2vm/charts/metal2vm --version 0.1.0)
+# or install.yaml separately.
+apiVersion: mirror.openshift.io/v2alpha1
+kind: ImageSetConfiguration
+mirror:
+  additionalImages:
+  - name: ghcr.io/metal2vm/metal2vm-operator:v0.1.0
+  - name: ghcr.io/metal2vm/metal2vm-transfer:v0.1.0
+  - name: ghcr.io/metal2vm/metal2vm-boot-artifacts:v0.1.0
+  - name: ghcr.io/metal2vm/metal2vm-console-plugin:v0.1.0

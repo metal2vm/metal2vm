@@ -466,7 +466,7 @@ func (r *P2VMigrationReconciler) ensureTransferPod(ctx context.Context, m *migra
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: &no,
 					ReadOnlyRootFilesystem:   &yes,
-					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{capabilityAll}},
 				},
 				TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 			}},

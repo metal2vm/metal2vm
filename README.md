@@ -96,7 +96,7 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
 | Disks: re-attach SAN LUNs (FC/iSCSI) instead of copying | ⏳ In the API and UI, blocked by pre-flight until implemented |
 | Network: pod network, Multus (bridge/localnet), keep MAC/IP | ✅ Working |
 | Console plugin (servers, wizard, progress, cutover, rollback) | ✅ Working |
-| Packaging: OLM bundle, Helm chart, `oc-mirror` image list | ⏳ Next milestone |
+| Packaging: OLM bundle and catalog, Helm chart, YAML, `oc-mirror` configs | ✅ Ready; first published release pending |
 
 ## Requirements
 
@@ -111,19 +111,28 @@ Details are in [docs/DESIGN.md](docs/DESIGN.md).
   OS for the read-only pre-check. See
   [required network flows](docs/DESIGN.md#39-required-network-flows-included-in-the-docs).
 
-## Quick start (development install on OpenShift)
+## Install
 
-Until the OLM bundle and Helm chart are published, the images are built on
-the cluster itself. You need `oc`/`kubectl` logged in as cluster-admin, and
-podman.
+| Method | Command / steps |
+|---|---|
+| **OperatorHub (OLM)** | Add the catalog `ghcr.io/metal2vm/metal2vm-operator-catalog`, then install **metal2vm** from the console |
+| **Helm** | `helm install metal2vm oci://ghcr.io/metal2vm/charts/metal2vm -n metal2vm-system --create-namespace` |
+| **YAML** | `oc apply --server-side -f` the release's `install.yaml` |
+
+The operator creates what else it needs: its settings (`P2VConfig` named
+`cluster`), the SCC for its conversion pods, and the console plugin
+registration. Full instructions are in **[docs/install.md](docs/install.md)**.
+Disconnected clusters are covered in **[docs/disconnected.md](docs/disconnected.md)**,
+with ready-made `oc-mirror` configurations.
+
+> [!NOTE]
+> The first release (images, catalog and chart on `ghcr.io`) is not
+> published yet. Until then, build everything on your cluster:
 
 ```sh
 git clone https://github.com/metal2vm/metal2vm && cd metal2vm
-hack/openshift-dev-deploy.sh all    # build images on the cluster; deploy the operator and console plugin
-oc apply -k config/scc              # SCC for the conversion pods (virt-v2v's network helper)
+hack/openshift-dev-deploy.sh all    # build images on the cluster; deploy operator + console plugin
 ```
-
-The operator creates its cluster settings (`P2VConfig` named `cluster`) itself.
 
 Then, in the console: **Virtualization → Physical servers → Add physical
 server**, and **Migrate**.
@@ -146,6 +155,7 @@ hack/toolbox.sh make test             # generate, vet, unit + envtest (Go)
 hack/toolbox.sh make lint             # golangci-lint
 make plugin-test plugin-lint          # console plugin tests and lint (Node 22)
 make plugin-build                     # console plugin production build
+hack/toolbox.sh make catalog build-installer   # OLM bundle + catalog, dist/install.yaml
 ```
 
 If Go is installed locally, the usual `make test` / `make build` work as well.
@@ -156,8 +166,9 @@ If Go is installed locally, the usual `make test` / `make build` work as well.
 | `cmd/`, `internal/` | Operator, live agent, transfer/conversion, gateway, BMC, network fix-up, VM builder |
 | `console-plugin/` | OpenShift console dynamic plugin (React, PatternFly 6) |
 | `images/` | Transfer (virt-v2v, virtio-win) and boot-artifacts (Fedora CoreOS) images |
-| `config/` | Kustomize manifests (CRDs, RBAC, manager, SCC, console plugin) |
-| `docs/` | Design, architecture diagram |
+| `config/` | Kustomize manifests: `default` (operator), `openshift` (+ console plugin), `manifests` (OLM CSV base) |
+| `bundle/`, `catalog/`, `dist/` | Generated OLM bundle and catalog, `install.yaml`, Helm chart (`dist/chart`) |
+| `docs/` | [Install](docs/install.md), [disconnected](docs/disconnected.md), [releasing](docs/releasing.md), [design](docs/DESIGN.md) |
 | `hack/`, `test/lab/` | Developer and lab scripts (lab source VMs, Redfish emulator) |
 
 ## Relationship to Forklift / MTV

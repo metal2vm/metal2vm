@@ -1,0 +1,92 @@
+name: Packaging
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  generated:
+    permissions:
+      contents: read
+    name: Bundle, catalog and installer are up to date
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Regenerate (validates the bundle and the catalog)
+        run: make catalog build-installer
+
+      - name: Check for differences
+        run: |
+          if ! git diff --exit-code -- bundle catalog dist/install.yaml config api; then
+            echo "::error::Generated files are out of date: run 'make catalog build-installer' and commit."
+            exit 1
+          fi
+
+  chart:
+    permissions:
+      contents: read
+    name: Helm chart installs and the operator becomes ready
+    runs-on: ubuntu-latest
+    env:
+      IMG: example.com/metal2vm:chart-test
+      BOOT_IMG: example.com/metal2vm-boot-artifacts:chart-test
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Lint and render the chart
+        run: |
+          make helm
+          bin/helm lint dist/chart
+          bin/helm template metal2vm dist/chart -n metal2vm-system > /dev/null
+          bin/helm template metal2vm dist/chart -n metal2vm-system --set consolePlugin.enabled=false \
+            | grep -q -- '--console-plugin=false'
+
+      - name: Install kind and create a cluster
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/latest/kind-linux-$(go env GOARCH)
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind create cluster
+
+      - name: Build and load images
+        run: |
+          make docker-build IMG=$IMG
+          docker build -t $BOOT_IMG -f test/e2e/boot-artifacts-stub/Containerfile test/e2e/boot-artifacts-stub
+          kind load docker-image $IMG
+          kind load docker-image $BOOT_IMG
+
+      - name: Install the chart (plain Kubernetes, so without the console plugin)
+        run: |
+          make helm-deploy IMG=$IMG HELM_EXTRA_ARGS="--set bootArtifacts.image.repository=${BOOT_IMG%:*} \
+            --set bootArtifacts.image.tag=${BOOT_IMG##*:} --set consolePlugin.enabled=false --timeout 5m"
+          make helm-status
+
+      - name: The operator runs and reports the missing OpenShift APIs
+        run: |
+          kubectl -n metal2vm-system rollout status deploy/metal2vm-controller-manager --timeout=120s
+          for i in $(seq 1 30); do
+            reason=$(kubectl get p2vconfig cluster -o jsonpath='{.status.conditions[?(@.type=="Available")].reason}' 2>/dev/null || true)
+            [ "$reason" = "RouteAPIUnavailable" ] && exit 0
+            sleep 5
+          done
+          kubectl -n metal2vm-system logs deploy/metal2vm-controller-manager -c manager --tail=50
+          exit 1
