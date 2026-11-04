@@ -1,37 +1,133 @@
 # metal2vm
 
-Migrate physical servers to virtual machines on OpenShift Virtualization /
-KubeVirt, from the OpenShift web console.
+**Migrate physical servers to virtual machines on OpenShift Virtualization, from the OpenShift web console.**
 
-> **Status: early development (milestone M1).** A physical server can be
-> booted into the metal2vm live environment from a per-server ISO, and its
-> hardware inventory appears in its `P2VSource`. Nothing migrates yet. See
-> [docs/DESIGN.md](docs/DESIGN.md) for the design and milestones.
+[![Tests](https://github.com/metal2vm/metal2vm/actions/workflows/test.yml/badge.svg)](https://github.com/metal2vm/metal2vm/actions/workflows/test.yml)
+[![Lint](https://github.com/metal2vm/metal2vm/actions/workflows/lint.yml/badge.svg)](https://github.com/metal2vm/metal2vm/actions/workflows/lint.yml)
+[![Console plugin](https://github.com/metal2vm/metal2vm/actions/workflows/console-plugin.yml/badge.svg)](https://github.com/metal2vm/metal2vm/actions/workflows/console-plugin.yml)
+[![E2E](https://github.com/metal2vm/metal2vm/actions/workflows/test-e2e.yml/badge.svg)](https://github.com/metal2vm/metal2vm/actions/workflows/test-e2e.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-## How it will work (cold migration)
+metal2vm moves a Linux or Windows server from bare metal into a KubeVirt
+virtual machine. An admin does it alone, in the console: pick the server, choose
+what happens to each disk and network card, start, check the VM, cut over. The
+physical server's disks are only ever read, so rolling back means powering the
+server on again.
 
-1. Register a physical server (`P2VSource`) with its Redfish BMC, PXE MAC, or
-   nothing at all (manual USB boot).
-2. Plan the migration (`P2VMigration`): target namespace, CPU and memory, a
-   copy, attach-LUN or skip action per disk, and a network mapping per NIC.
-3. metal2vm boots the server into a Fedora CoreOS live environment. A small
-   agent there exposes the disks read-only over an outbound HTTPS tunnel.
-4. Disks are copied into PVCs with `nbdcopy` and converted with
-   `virt-v2v-in-place` (virtio drivers, bootloader, network config).
-5. The VM is test-booted without production networking. At cutover the source
-   is powered off and the VM goes live. Until the migration is archived,
-   rollback powers the source back on.
+<!-- Demo video: drag metal2vm-demo-narrated.mp4 onto this line in the GitHub editor. -->
+**▶ Demo (4½ min, narrated):** _video coming here_
 
-## Repository layout
+> [!NOTE]
+> **Status: alpha.** The cold-migration path works end to end on a lab
+> OpenShift 4.22 cluster. RHEL 9 and Windows Server 2022 were migrated from
+> simulated physical servers: KubeVirt VMs with SATA disks, an Intel e1000e NIC,
+> UEFI with Secure Boot, and a Redfish BMC emulator. **It has not yet been tested
+> on real hardware.** Reports from real servers are very welcome. See
+> [what works](#feature-status).
 
-| Path | Contents |
+## Highlights
+
+- **Click-ops in the OpenShift console.** A wizard and a progress page under
+  *Virtualization*, with no YAML needed. Everything is also a plain CR, so `oc`
+  and GitOps work too.
+- **The source is never modified.** Disks are exported read-only from a live
+  environment in RAM. Until a migration is archived, rollback powers the server
+  back on.
+- **Boots servers for you.** Through the BMC (Redfish virtual media: iDRAC, iLO,
+  XClarity, ...) or PXE/iPXE. Without either, the admin boots a per-server ISO
+  from a USB stick.
+- **Test before cutover.** The VM first boots without network. At cutover,
+  metal2vm powers the server off (confirmed through the BMC) and starts the VM
+  on its production networks.
+- **Keeps network identity.** The pod network gives a new address by DHCP. A
+  bridged/localnet network can keep the MAC and static IP. The guest's network
+  config is adapted, and every change is listed.
+- **Firewall- and disconnected-friendly.** The server only calls out over HTTPS
+  443, through an authenticated reverse tunnel. All images can be mirrored with
+  `oc-mirror`.
+- **Glue, not reinvention.** Built on virt-v2v, libguestfs, nbdkit/nbdcopy,
+  Fedora CoreOS, chisel, gofish, KubeVirt and CDI.
+
+## How it works
+
+![metal2vm architecture](docs/architecture.svg)
+
+1. **Create** the migration in the wizard; it becomes a `P2VMigration` CR.
+2. The operator runs **pre-flight** checks: inventory, storage, networks, risks
+   such as encrypted disks.
+3. The server **boots the metal2vm live environment** (Fedora CoreOS) through
+   its BMC, PXE or a USB stick.
+4. The agent there **calls home over HTTPS 443** and exposes the disks read-only
+   (nbdkit) through a reverse tunnel.
+5. A transfer pod **copies the disks** with `nbdcopy` into block PVCs.
+6. A conversion pod **converts the guest in place**: network fix-up, then
+   `virt-v2v-in-place` (virtio drivers, bootloader).
+7. The VM **test-boots** without network; then you **cut over**, or roll back.
+
+Details are in [docs/DESIGN.md](docs/DESIGN.md).
+
+## Screenshots
+
+| | |
 |---|---|
-| `api/v1alpha1/` | CRDs: `P2VSource`, `P2VMigration`, `P2VConfig` (`migration.metal2vm.io`) |
-| `cmd/main.go`, `internal/controller/` | Operator (kubebuilder / controller-runtime) |
-| `console-plugin/` | OpenShift console dynamic plugin (React, PatternFly) |
-| `config/` | Kustomize manifests (CRDs, RBAC, manager) |
-| `docs/` | Design and user documentation |
-| `hack/` | Developer scripts |
+| ![Physical servers](docs/images/servers.png) | ![Server details](docs/images/server-details.png) |
+| **Physical servers**, with how each can be reached | **Server details**: hardware, boot ISO, iPXE URL |
+| ![Wizard: server](docs/images/wizard-server.png) | ![Wizard: network](docs/images/wizard-network.png) |
+| **Wizard**: server and boot method | **Wizard**: network per NIC, keep MAC/IP |
+| ![Wizard: review](docs/images/wizard-review.png) | ![Migration details](docs/images/migration-details.png) |
+| **Wizard**: plain-language review | **Migration**: progress, disks, guest network changes |
+
+## Feature status
+
+| Area | Status |
+|---|---|
+| Cold migration (copy while the server is down) | ✅ Working |
+| Warm migration (copy while it runs, short cutover) | ⏳ Planned (phase 2) |
+| Linux: RHEL family | ✅ Verified with RHEL 9 |
+| Linux: Ubuntu / Debian / SUSE | 🧪 Supported by virt-v2v and the network fix-up, not yet tested here |
+| Windows Server | ✅ Verified with Windows Server 2022 (virtio-win drivers bundled) |
+| Firmware: UEFI (incl. Secure Boot) and BIOS | ✅ UEFI verified, BIOS supported |
+| Boot: Redfish BMC, PXE/iPXE, USB/ISO | ✅ Working (Redfish tested with an emulator) |
+| Disks: copy to any storage class, or skip | ✅ Working |
+| Disks: re-attach SAN LUNs (FC/iSCSI) instead of copying | ⏳ In the API and UI, blocked by pre-flight until implemented |
+| Network: pod network, Multus (bridge/localnet), keep MAC/IP | ✅ Working |
+| Console plugin (servers, wizard, progress, cutover, rollback) | ✅ Working |
+| Packaging: OLM bundle, Helm chart, `oc-mirror` image list | ⏳ Next milestone |
+
+## Requirements
+
+- OpenShift 4.22+ with OpenShift Virtualization. Kubernetes with KubeVirt + CDI
+  should work, but the console plugin needs OpenShift.
+- A storage class that provides block-mode PVCs for VMs: ODF or any CSI driver
+  supported by OpenShift Virtualization.
+- From the physical server: outbound HTTPS (443) to the cluster's ingress. From
+  the cluster: the BMC (for Redfish) and, optionally, SSH or WinRM to the running
+  OS for the read-only pre-check. See
+  [required network flows](docs/DESIGN.md#39-required-network-flows-included-in-the-docs).
+
+## Quick start (development install on OpenShift)
+
+Until the OLM bundle and Helm chart are published, the images are built on
+the cluster itself. You need `oc`/`kubectl` logged in as cluster-admin, and
+podman.
+
+```sh
+git clone https://github.com/metal2vm/metal2vm && cd metal2vm
+hack/openshift-dev-deploy.sh all    # build images on the cluster; deploy the operator and console plugin
+oc apply -k config/scc              # SCC for the conversion pods (virt-v2v's network helper)
+oc apply -f config/samples/migration_v1alpha1_p2vconfig.yaml   # cluster settings ("cluster")
+```
+
+Then, in the console: **Virtualization → Physical servers → Add physical
+server**, and **Migrate**.
+
+**No spare server?** Use a KubeVirt VM that plays a physical server, and a
+Redfish emulator as its BMC:
+
+```sh
+hack/lab-source-vm.sh create lab-rhel01 rhel9   # or: win2k22
+hack/lab-redfish.sh deploy                      # prints the BMC address and credentials
+```
 
 ## Development
 
@@ -39,30 +135,35 @@ The only thing you need on your machine is **podman** (or docker). The Go and
 Node toolchains run in pinned containers:
 
 ```sh
-hack/toolbox.sh make test             # generate, vet, unit + envtest (Go 1.27)
-hack/toolbox.sh make build            # build the operator binary
+hack/toolbox.sh make test             # generate, vet, unit + envtest (Go)
+hack/toolbox.sh make lint             # golangci-lint
 make plugin-test plugin-lint          # console plugin tests and lint (Node 22)
 make plugin-build                     # console plugin production build
 ```
 
 If Go is installed locally, the usual `make test` / `make build` work as well.
 
-### Trying it on an OpenShift cluster
+| Path | Contents |
+|---|---|
+| `api/v1alpha1/` | CRDs: `P2VSource`, `P2VMigration`, `P2VConfig` (`migration.metal2vm.io`) |
+| `cmd/`, `internal/` | Operator, live agent, transfer/conversion, gateway, BMC, network fix-up, VM builder |
+| `console-plugin/` | OpenShift console dynamic plugin (React, PatternFly 6) |
+| `images/` | Transfer (virt-v2v, virtio-win) and boot-artifacts (Fedora CoreOS) images |
+| `config/` | Kustomize manifests (CRDs, RBAC, manager, SCC, console plugin) |
+| `docs/` | Design, architecture diagram |
+| `hack/`, `test/lab/` | Developer and lab scripts (lab source VMs, Redfish emulator) |
 
-```sh
-hack/openshift-dev-deploy.sh          # build images on the cluster and deploy the operator
-hack/lab-source-vm.sh create          # a KubeVirt VM that plays a physical server
-kubectl -n metal2vm-test get p2vsource lab-server01 -o yaml   # inventory appears under status
-```
+## Relationship to Forklift / MTV
 
-For a real server, create a `P2VSource`, then boot the server from the ISO
-URL in the Secret `<name>-boot` (key `isoURL`). Use USB or the BMC's virtual
-media.
+metal2vm is standalone today. Its CRDs and pipeline are designed so that it
+could later become a source provider for [Forklift](https://github.com/kubev2v/forklift)
+(the upstream of the Migration Toolkit for Virtualization). See
+[DESIGN.md §10](docs/DESIGN.md#10-relationship-to-forklift--mtv-option-c).
 
-## Requirements (target)
+## Contributing
 
-- OpenShift 4.22+ with OpenShift Virtualization, or Kubernetes with KubeVirt + CDI
-- Any CSI storage class that supports block-mode PVCs for VMs (e.g. ODF)
+Issues and pull requests are welcome. Results from real hardware help the most:
+server model, BMC, RAID controller and source OS, whether it worked or not.
 
 ## License
 
