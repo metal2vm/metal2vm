@@ -14,8 +14,12 @@ what happens to each disk and network card, start, check the VM, cut over. The
 physical server's disks are only ever read, so rolling back means powering the
 server on again.
 
-<!-- Demo video: drag metal2vm-demo-narrated.mp4 onto this line in the GitHub editor. -->
-**▶ Demo (4½ min, narrated):** _video coming here_
+**▶ Demo (4½ min, narrated):
+
+
+https://github.com/user-attachments/assets/870a490a-e72d-442c-b92c-5c220135bcbd
+
+
 
 > [!NOTE]
 > **Status: alpha.** The cold-migration path works end to end on a lab
