@@ -70,6 +70,10 @@ Forklift/MTV does for warm migration with `virt-v2v-in-place`.
 
 ## 3. Architecture (cold path)
 
+![metal2vm architecture](architecture.svg)
+
+The diagram source is [`architecture.excalidraw`](architecture.excalidraw); open it in [excalidraw.com](https://excalidraw.com) or the VS Code Excalidraw extension, then export the SVG/PNG again after editing. The original text sketch follows.
+
 ```
  Physical server (booted into the FCOS live ISO, running in RAM, source disks are only read)
  ┌──────────────────────────────────────────┐

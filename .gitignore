@@ -31,3 +31,6 @@ go.work
 
 # hack/openshift-dev-deploy.sh scratch dirs
 .deploy-*/
+
+# macOS
+.DS_Store
